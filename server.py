@@ -6,6 +6,22 @@ from email.policy import default as email_policy
 import json
 import os
 import re
+import threading
+import time
+
+from case_store import (
+    add_trace_step,
+    attach_files,
+    create_case,
+    get_case,
+    list_cases,
+    list_logs,
+    log_ai,
+    log_system,
+    log_user,
+    mark_case_done,
+    mark_case_failed,
+)
 
 try:
     import requests
@@ -16,6 +32,7 @@ except ImportError:
 HOST = os.getenv("HOST", "127.0.0.1")
 PORT = int(os.getenv("PORT", "4173"))
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 MAX_IMAGES = 5
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
@@ -445,6 +462,60 @@ def analyze_images(images):
     return normalize_result_scores(extract_json(extract_output_text(response.json())))
 
 
+def run_case_analysis(case_id, images):
+    total_start = time.perf_counter()
+    log_system("info", "analysis_start", "案件分析任务已启动", case_id)
+    try:
+        step_start = time.perf_counter()
+        add_trace_step(case_id, "OCR解析", "success", f"已接收 {len(images)} 张截图，进入文本与元数据解析队列。", int((time.perf_counter() - step_start) * 1000))
+        log_system("info", "ocr", "OCR解析阶段完成", case_id, int((time.perf_counter() - step_start) * 1000))
+
+        step_start = time.perf_counter()
+        result = analyze_images(images)
+        extract_summary = result.get("dispute_summary") or result.get("structured_evidence", {}).get("order_status") or "证据抽取完成。"
+        add_trace_step(case_id, "证据抽取", "success", extract_summary, int((time.perf_counter() - step_start) * 1000))
+        log_system("info", "evidence_extract", "证据结构化完成", case_id, int((time.perf_counter() - step_start) * 1000))
+
+        step_start = time.perf_counter()
+        conflict_output = result.get("conflict_summary") or "暂未发现明确冲突。"
+        add_trace_step(case_id, "冲突分析", "success", conflict_output, int((time.perf_counter() - step_start) * 1000))
+        log_system("info", "conflict_analysis", "冲突分析完成", case_id, int((time.perf_counter() - step_start) * 1000))
+
+        step_start = time.perf_counter()
+        confidence = int(result.get("appeal_win_score") or 0)
+        final_output = result.get("judgement_reason") or result.get("recommendation") or "最终判断已生成。"
+        add_trace_step(case_id, "最终判断", "success", final_output, int((time.perf_counter() - step_start) * 1000), confidence)
+        log_ai(
+            case_id,
+            "电商纠纷证据结构化与申诉胜率分析",
+            json_dumps(result)[:5000],
+            result.get("score_explanation") or result.get("judgement_reason") or "",
+            confidence,
+        )
+        case = mark_case_done(case_id, result)
+        log_system("info", "analysis_done", "案件分析任务已完成", case_id, int((time.perf_counter() - total_start) * 1000))
+        return case
+    except Exception as exc:
+        message = str(exc)
+        add_trace_step(case_id, "分析失败", "failed", message, int((time.perf_counter() - total_start) * 1000))
+        mark_case_failed(case_id, message)
+        log_system("error", "analysis_failed", message, case_id, int((time.perf_counter() - total_start) * 1000))
+        raise
+
+
+def start_case_analysis(case_id, images):
+    thread = threading.Thread(target=run_case_analysis, args=(case_id, images), daemon=True)
+    thread.start()
+    return thread
+
+
+def int_query(query, key, default):
+    try:
+        return int(query.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
 class Handler(SimpleHTTPRequestHandler):
     extensions_map = {
         **SimpleHTTPRequestHandler.extensions_map,
@@ -462,7 +533,17 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def admin_authorized(self, query):
+        if not ADMIN_TOKEN:
+            return True
+        token = self.headers.get("X-Admin-Token") or query.get("admin_token") or ""
+        return token == ADMIN_TOKEN
+
     def read_images(self):
+        images, _fields = self.read_multipart()
+        return images
+
+    def read_multipart(self):
         content_length = int(self.headers.get("Content-Length", 0) or 0)
         if content_length <= 0:
             raise ValueError("请至少上传 1 张截图。")
@@ -477,8 +558,13 @@ class Handler(SimpleHTTPRequestHandler):
         raw_message = (f"Content-Type: {content_type}\r\n" f"MIME-Version: 1.0\r\n\r\n").encode("utf-8") + body
         message = BytesParser(policy=email_policy).parsebytes(raw_message)
         images = []
+        fields = {}
         for part in message.iter_parts():
-            if part.get_param("name", header="content-disposition") != "images":
+            name = part.get_param("name", header="content-disposition")
+            if name != "images":
+                if name:
+                    value = part.get_payload(decode=True) or b""
+                    fields[name] = value.decode("utf-8", errors="replace")
                 continue
             mime = part.get_content_type()
             if mime not in ("image/png", "image/jpeg", "image/webp"):
@@ -491,17 +577,90 @@ class Handler(SimpleHTTPRequestHandler):
             raise ValueError("请至少上传 1 张截图。")
         if len(images) > MAX_IMAGES:
             raise ValueError("最多上传 5 张截图。")
-        return images
+        return images, fields
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/") or "/"
+        query = dict(item.split("=", 1) if "=" in item else (item, "") for item in parsed.query.split("&") if item)
+
+        limit = int_query(query, "limit", 50)
+        offset = int_query(query, "offset", 0)
+
+        if path == "/cases":
+            page = list_cases(limit=limit, offset=offset)
+            self.send_json(200, {"cases": page["items"], "pagination": page["pagination"]})
+            return
+        if path.startswith("/case/"):
+            case_id = path.split("/", 2)[2]
+            case = get_case(case_id)
+            if not case:
+                self.send_json(404, {"error": "案件不存在"})
+                return
+            log_user(case_id, "view_case", {})
+            self.send_json(200, {"case": case})
+            return
+        if path in ("/logs/user", "/logs/system", "/logs/ai"):
+            if not self.admin_authorized(query):
+                self.send_json(401, {"error": "需要管理员访问令牌。"})
+                return
+            kind = path.rsplit("/", 1)[1]
+            page = list_logs(kind, query.get("case_id") or None, limit=limit, offset=offset)
+            self.send_json(200, {"logs": page["items"], "pagination": page["pagination"]})
+            return
+        if path == "/admin/logs":
+            self.path = "/index.html"
+            return super().do_GET()
+
+        return super().do_GET()
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if path != "/api/analyze":
-            self.send_json(404, {"error": "接口不存在"})
-            return
         try:
-            images = self.read_images()
-            result = analyze_images(images)
-            self.send_json(200, result)
+            if path == "/case/create":
+                case = create_case([])
+                log_user(case["id"], "create_case", {})
+                log_system("info", "case_create", "案件已创建", case["id"])
+                self.send_json(201, {"case": case})
+                return
+
+            if path == "/case/upload":
+                images, fields = self.read_multipart()
+                case_id = fields.get("case_id")
+                if not case_id:
+                    raise ValueError("缺少 case_id。")
+                case = attach_files(case_id, images)
+                if not case:
+                    self.send_json(404, {"error": "案件不存在"})
+                    return
+                log_user(case_id, "upload_files", {"file_count": len(images)})
+                log_system("info", "case_upload", "证据文件已绑定到案件", case_id)
+                self.send_json(200, {"case": case})
+                return
+
+            if path == "/case/analyze":
+                images = self.read_images()
+                case = create_case(images)
+                case_id = case["id"]
+                log_user(case_id, "start_analysis", {"file_count": len(images), "mode": "async"})
+                start_case_analysis(case_id, images)
+                self.send_json(202, {"case": get_case(case_id)})
+                return
+
+            if path == "/api/analyze":
+                images = self.read_images()
+                case = create_case(images)
+                case_id = case["id"]
+                log_user(case_id, "start_analysis", {"file_count": len(images), "mode": "sync_compat"})
+                run_case_analysis(case_id, images)
+                final_case = get_case(case_id)
+                payload = dict(final_case.get("raw_result") or {})
+                payload["case_id"] = case_id
+                payload["case"] = final_case
+                self.send_json(200, payload)
+                return
+
+            self.send_json(404, {"error": "接口不存在"})
         except Exception as exc:
             self.send_json(400, {"error": str(exc)})
 

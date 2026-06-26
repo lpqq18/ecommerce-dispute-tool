@@ -4,87 +4,148 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>电商纠纷证据包助手</title>
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <header class="topbar">
       <strong>电商纠纷证据包助手</strong>
-      <div class="top-status"><span class="status-dot" id="statusDot"></span><span id="statusPill">等待上传</span><button id="resetBtn" type="button">重置</button></div>
+      <nav>
+        <button class="nav-btn active" id="workspaceNav" type="button">案件工作台</button>
+        <button class="nav-btn" id="logsNav" type="button">系统日志</button>
+      </nav>
+      <div class="top-status">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusPill">等待上传</span>
+        <button id="refreshBtn" type="button">刷新</button>
+        <button id="resetBtn" type="button">重置</button>
+      </div>
     </header>
 
-    <main class="app-shell">
-      <section class="upload-screen" id="uploadPanel">
-        <p class="section-label">证据接入</p>
-        <h1>上传纠纷证据</h1>
-        <p class="lead">支持聊天记录、订单详情、物流凭证、商品规格和售后截图。系统会生成时间线、双评分、判决方向、冲突检测和申诉文本。</p>
-        <label class="dropzone" id="dropzone">
-          <input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp" multiple />
-          <span>↑</span>
-          <strong>拖拽文件至此处，或点击本地上传</strong>
-          <small>支持 PNG / JPG / WebP，最多 5 张</small>
-        </label>
-        <div class="matrix-head"><span>已选证据组件</span><strong id="imageCount">0 / 5</strong></div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>文件名</th><th>单据属性</th><th>大小</th><th>操作</th></tr></thead>
-            <tbody id="fileRows"><tr class="empty-row"><td colspan="4">尚未选择证据组件。</td></tr></tbody>
-          </table>
+    <main class="case-shell" id="workspaceView">
+      <aside class="case-sidebar">
+        <div class="sidebar-head">
+          <p class="section-label">Case List</p>
+          <button id="reloadCasesBtn" type="button">刷新</button>
         </div>
-        <p class="form-error" id="formError"></p>
-        <button class="primary-btn" id="analyzeBtn" type="button" disabled>开始分析纠纷案件</button>
+        <div class="case-list" id="caseList">
+          <p class="muted">暂无历史案件。</p>
+        </div>
+        <div class="pager">
+          <button id="casePrevBtn" type="button">上一页</button>
+          <span id="casePageText">0 / 0</span>
+          <button id="caseNextBtn" type="button">下一页</button>
+        </div>
+      </aside>
+
+      <section class="case-center">
+        <section class="upload-panel" id="uploadPanel">
+          <p class="section-label">证据接入</p>
+          <h1>上传纠纷证据</h1>
+          <p class="lead">每次上传都会自动创建 Case，系统会记录分析状态、AI Trace 与运行日志。</p>
+          <label class="dropzone" id="dropzone">
+            <input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp" multiple />
+            <span>↑</span>
+            <strong>拖拽文件至此处，或点击本地上传</strong>
+            <small>支持 PNG / JPG / WebP，最多 5 张</small>
+          </label>
+          <div class="matrix-head"><span>已选证据组件</span><strong id="imageCount">0 / 5</strong></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>文件名</th><th>单据属性</th><th>大小</th><th>操作</th></tr></thead>
+              <tbody id="fileRows"><tr class="empty-row"><td colspan="4">尚未选择证据组件。</td></tr></tbody>
+            </table>
+          </div>
+          <p class="form-error" id="formError"></p>
+          <button class="primary-btn" id="analyzeBtn" type="button" disabled>创建 Case 并分析</button>
+        </section>
+
+        <section class="current-case-panel">
+          <p class="section-label">Current Case</p>
+          <div class="case-summary" id="currentCase">
+            <p class="muted">还没有当前案件。上传证据后会自动生成 Case。</p>
+          </div>
+          <div class="pipeline-steps" id="pipelineSteps">
+            <div class="pipeline-step"><span>[ ]</span><p>等待 Case 创建</p></div>
+            <div class="pipeline-step"><span>[ ]</span><p>等待 OCR 解析</p></div>
+            <div class="pipeline-step"><span>[ ]</span><p>等待证据抽取</p></div>
+            <div class="pipeline-step"><span>[ ]</span><p>等待最终判断</p></div>
+          </div>
+        </section>
       </section>
 
-      <section class="pipeline-card" id="loadingPanel" hidden>
-        <p class="section-label">AI 分析流水线</p>
-        <h2>分析任务执行中</h2>
-        <div class="pipeline-steps">
-          <div class="pipeline-step active"><span>[→]</span><p>步骤 1：提取 OCR 文本与元数据...</p></div>
-          <div class="pipeline-step"><span>[ ]</span><p>步骤 2：重建交易时间线...</p></div>
-          <div class="pipeline-step"><span>[ ]</span><p>步骤 3：执行证据权重与冲突检测...</p></div>
-          <div class="pipeline-step"><span>[ ]</span><p>步骤 4：生成双评分与申诉报告...</p></div>
-        </div>
-        <div class="progress-rail"><div id="progressBar"></div></div>
-      </section>
+      <aside class="case-inspector">
+        <section class="panel">
+          <p class="section-label">AI 判断结果</p>
+          <div class="score-console">
+            <div class="score-card" id="riskCard"><span id="riskLevel">纠纷风险分</span><strong id="riskScore">0</strong><p id="recommendation">等待分析。</p></div>
+            <div class="score-card appeal" id="appealScoreCard"><span>申诉胜率分</span><strong id="appealWinScore">0</strong><p id="scoreExplanation">风险高不等于申诉胜率高。</p></div>
+          </div>
+          <div class="decision-grid">
+            <article><span>纠纷类型</span><strong id="riskHeadline">等待分析</strong></article>
+            <article><span>判断结论</span><strong id="judgementText">等待分析</strong><p id="judgementReason"></p></article>
+          </div>
+        </section>
 
-      <section class="dashboard" id="resultPanel" hidden>
-        <div class="dashboard-left">
-          <section class="panel">
-            <p class="section-label">模块 A：双评分决策</p>
-            <div class="score-console">
-              <div class="score-card" id="riskCard"><span id="riskLevel">纠纷风险分</span><strong id="riskScore">0</strong><p id="recommendation">等待分析。</p></div>
-              <div class="score-card appeal" id="appealScoreCard"><span>申诉胜率分</span><strong id="appealWinScore">0</strong><p id="scoreExplanation">风险高不等于申诉胜率高。</p></div>
-            </div>
-            <div class="decision-grid">
-              <article><span>纠纷类型</span><strong id="riskHeadline">等待分析</strong></article>
-              <article><span>判决方向</span><strong id="judgementText">等待分析</strong><p id="judgementReason"></p></article>
-              <article><span>证据完整度</span><strong id="completenessScore">0%</strong><p id="completenessSummary"></p></article>
-            </div>
-          </section>
-          <section class="panel">
-            <p class="section-label">模块 B：证据摘要与矛盾点</p>
-            <div class="summary-grid">
-              <article><h3>纠纷总结</h3><p id="summaryText">-</p></article>
-              <article><h3>风险原因</h3><div class="finding-list" id="reasonList"></div></article>
-              <article><h3>处理策略</h3><p id="strategyText">-</p></article>
-              <article><h3>证据缺口</h3><div class="finding-list" id="gapList"></div></article>
-            </div>
-          </section>
-          <section class="panel">
-            <div class="doc-head"><p class="section-label">模块 C：平台申诉文本</p><button id="copyAppealBtn" type="button">复制文本</button></div>
-            <pre id="appealText">系统生成的申诉文本将显示在这里。</pre>
-          </section>
+        <section class="panel">
+          <p class="section-label">证据摘要</p>
+          <div class="summary-grid">
+            <article><h3>纠纷总结</h3><p id="summaryText">-</p></article>
+            <article><h3>证据链摘要</h3><div class="finding-list" id="keyEvidenceList"></div></article>
+            <article><h3>风险原因</h3><div class="finding-list" id="reasonList"></div></article>
+            <article><h3>证据缺口</h3><div class="finding-list" id="gapList"></div></article>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="doc-head"><p class="section-label">平台申诉文本</p><button id="copyAppealBtn" type="button">复制文本</button></div>
+          <pre id="appealText">系统生成的申诉文本将显示在这里。</pre>
+        </section>
+
+        <section class="panel">
+          <p class="section-label">AI分析过程</p>
+          <div class="trace-feed" id="traceFeed"></div>
+        </section>
+
+        <section class="panel">
+          <p class="section-label">Case Logs</p>
+          <div class="mini-log-feed" id="caseLogFeed"></div>
+        </section>
+      </aside>
+    </main>
+
+    <main class="admin-shell" id="logsView" hidden>
+      <section class="admin-head">
+        <div>
+          <p class="section-label">Admin Panel</p>
+          <h1>系统日志</h1>
+          <p class="lead">按 Case ID 和日志类型过滤用户行为、系统运行与 AI 推理日志。</p>
         </div>
-        <aside class="dashboard-right">
-          <section><p class="section-label">法证时间线</p><div class="timeline" id="timeline"></div></section>
-          <section><p class="section-label">证据权重规则</p><div class="rule-feed" id="weightRuleList"></div></section>
-          <section><p class="section-label">冲突检测</p><div class="conflict-summary" id="conflictSummary">等待分析。</div><div class="conflict-feed" id="conflictList"></div></section>
-          <section><p class="section-label">证据完整度检查</p><div class="checklist-feed" id="completenessList"></div></section>
-          <section><p class="section-label">结构化证据</p><div class="structured-feed" id="structuredGrid"></div></section>
-        </aside>
+        <div class="admin-filters">
+          <input id="logCaseFilter" type="search" placeholder="输入 case_id 查询" />
+          <select id="logTypeFilter">
+            <option value="all">全部日志</option>
+            <option value="user">用户行为</option>
+            <option value="system">系统运行</option>
+            <option value="ai">AI推理</option>
+          </select>
+          <input id="adminTokenInput" type="password" placeholder="Admin Token（可选）" />
+          <button id="loadLogsBtn" type="button">查询</button>
+        </div>
       </section>
+      <section class="log-table-wrap">
+        <table>
+          <thead><tr><th>时间</th><th>类型</th><th>Case</th><th>级别/动作</th><th>内容</th><th>耗时</th></tr></thead>
+          <tbody id="adminLogRows"><tr class="empty-row"><td colspan="6">暂无日志。</td></tr></tbody>
+        </table>
+      </section>
+      <div class="pager admin-pager">
+        <button id="logPrevBtn" type="button">上一页</button>
+        <span id="logPageText">0 / 0</span>
+        <button id="logNextBtn" type="button">下一页</button>
+      </div>
     </main>
 
     <div class="toast" id="toast" hidden></div>
-    <script src="./app.js"></script>
+    <script src="/app.js?v=1.1"></script>
   </body>
 </html>

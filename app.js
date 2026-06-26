@@ -1,6 +1,13 @@
 const $ = (selector) => document.querySelector(selector);
 
-const state = { files: [], result: null, progressTimer: null, activeStep: 0 };
+const state = {
+  files: [],
+  currentCase: null,
+  pollTimer: null,
+  cases: [],
+  casePagination: { limit: 20, offset: 0, total: 0, has_more: false },
+  logPagination: { limit: 50, offset: 0, total: 0, has_more: false },
+};
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -9,6 +16,17 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
+}
+
+function formatBytes(bytes) {
+  if (!bytes) return "0 KB";
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function formatTime(timestamp) {
+  if (!timestamp) return "-";
+  return new Date(timestamp).toLocaleString("zh-CN", { hour12: false });
 }
 
 function showToast(message) {
@@ -24,10 +42,29 @@ function setStatus(text, tone = "") {
   $("#statusDot").className = `status-dot ${tone}`.trim();
 }
 
-function formatBytes(bytes) {
-  if (!bytes) return "0 KB";
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+async function fetchJson(url, options = {}) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(options.method || "GET", url);
+    xhr.responseType = "text";
+    Object.entries(options.headers || {}).forEach(([key, value]) => xhr.setRequestHeader(key, value));
+    xhr.onload = () => {
+      let payload = {};
+      try {
+        payload = xhr.responseText ? JSON.parse(xhr.responseText) : {};
+      } catch (error) {
+        reject(new Error("接口返回格式异常。"));
+        return;
+      }
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error(payload.error || payload.detail || "请求失败。"));
+        return;
+      }
+      resolve(payload);
+    };
+    xhr.onerror = () => reject(new Error("网络请求失败。"));
+    xhr.send(options.body || null);
+  });
 }
 
 function segmentForFile(file) {
@@ -75,59 +112,90 @@ function addFiles(fileList) {
   updateUploadState();
 }
 
-function setProgress(index) {
-  state.activeStep = index;
-  document.querySelectorAll(".pipeline-step").forEach((step, stepIndex) => {
-    const marker = step.querySelector("span");
-    step.classList.toggle("active", stepIndex === index);
-    step.classList.toggle("done", stepIndex < index);
-    marker.textContent = stepIndex < index ? "[✓]" : stepIndex === index ? "[→]" : "[ ]";
-  });
-  $("#progressBar").style.width = `${Math.min(((index + 1) / 4) * 100, 100)}%`;
+function statusLabel(status) {
+  return {
+    processing: "处理中",
+    done: "完成",
+    failed: "失败",
+  }[status] || "未知";
 }
 
-function startProgress() {
-  $("#uploadPanel").hidden = true;
-  $("#loadingPanel").hidden = false;
-  $("#resultPanel").hidden = true;
-  setStatus("分析中", "working");
-  setProgress(0);
-  clearInterval(state.progressTimer);
-  state.progressTimer = setInterval(() => setProgress(Math.min(state.activeStep + 1, 3)), 1200);
+function statusTone(status) {
+  return {
+    processing: "working",
+    done: "ready",
+    failed: "failed",
+  }[status] || "";
 }
 
-function stopProgress() {
-  clearInterval(state.progressTimer);
-  state.progressTimer = null;
-  setProgress(3);
-  $("#loadingPanel").hidden = true;
-}
-
-async function analyzeEvidence() {
-  if (!state.files.length) return;
-  const formData = new FormData();
-  state.files.forEach((file) => formData.append("images", file));
-  $("#analyzeBtn").disabled = true;
-  startProgress();
-  try {
-    const response = await fetch("/api/analyze", { method: "POST", body: formData });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || "分析失败，请稍后重试。");
-    state.result = payload;
-    stopProgress();
-    renderResult(payload);
-    $("#resultPanel").hidden = false;
-    setStatus("报告已生成", "ready");
-    showToast(payload.demo_mode ? "演示报告已生成，可测试完整流程。" : "申诉包已生成。");
-  } catch (error) {
-    stopProgress();
-    $("#uploadPanel").hidden = false;
-    setStatus("分析失败", "failed");
-    $("#formError").textContent = error.message;
-    showToast(error.message);
-  } finally {
-    $("#analyzeBtn").disabled = state.files.length < 1;
+function renderCaseList() {
+  const list = $("#caseList");
+  if (!state.cases.length) {
+    list.innerHTML = '<p class="muted">暂无历史案件。</p>';
+    return;
   }
+  list.innerHTML = state.cases.map((item) => `
+    <button class="case-item ${state.currentCase?.id === item.id ? "active" : ""}" type="button" data-case-id="${escapeHtml(item.id)}">
+      <span class="case-status ${escapeHtml(item.status)}">${escapeHtml(statusLabel(item.status))}</span>
+      <strong>${escapeHtml(item.id)}</strong>
+      <small>${formatTime(item.created_at)} · ${item.files?.length || 0} 张截图</small>
+      <p>${escapeHtml(item.result?.judgment || "等待分析结果")}</p>
+    </button>
+  `).join("");
+  renderCasePager();
+}
+
+async function loadCases() {
+  const query = new URLSearchParams({
+    limit: String(state.casePagination.limit),
+    offset: String(state.casePagination.offset),
+  });
+  const payload = await fetchJson(`/cases?${query.toString()}`);
+  state.cases = payload.cases || [];
+  state.casePagination = payload.pagination || state.casePagination;
+  renderCaseList();
+}
+
+function renderCasePager() {
+  const page = Math.floor(state.casePagination.offset / state.casePagination.limit) + 1;
+  const totalPages = Math.max(1, Math.ceil((state.casePagination.total || 0) / state.casePagination.limit));
+  $("#casePageText").textContent = `${page} / ${totalPages}`;
+  $("#casePrevBtn").disabled = state.casePagination.offset <= 0;
+  $("#caseNextBtn").disabled = !state.casePagination.has_more;
+}
+
+function renderCurrentCase(item) {
+  const target = $("#currentCase");
+  if (!item) {
+    target.innerHTML = '<p class="muted">还没有当前案件。上传证据后会自动生成 Case。</p>';
+    renderPipeline(null);
+    return;
+  }
+  target.innerHTML = `
+    <div class="case-meta">
+      <span class="case-status ${escapeHtml(item.status)}">${escapeHtml(statusLabel(item.status))}</span>
+      <strong>${escapeHtml(item.id)}</strong>
+      <small>创建：${formatTime(item.created_at)} / 更新：${formatTime(item.updated_at)}</small>
+    </div>
+    <div class="file-chip-list">
+      ${(item.files || []).map((file) => `<span>${escapeHtml(file.name)} · ${formatBytes(file.size)}</span>`).join("") || '<span>暂无文件</span>'}
+    </div>
+    ${item.result ? `<p class="case-result-line">结论：${escapeHtml(item.result.judgment)} / 分数：${Number(item.result.score || 0)}</p>` : '<p class="muted">分析任务正在处理或等待启动。</p>'}
+  `;
+  renderPipeline(item);
+}
+
+function renderPipeline(item) {
+  const traceSteps = item?.trace?.steps || [];
+  const names = ["Case创建", "OCR解析", "证据抽取", "最终判断"];
+  $("#pipelineSteps").innerHTML = names.map((name, index) => {
+    const done = name === "Case创建" ? !!item : traceSteps.some((step) => step.step === name && step.status === "success");
+    const failed = traceSteps.some((step) => step.status === "failed");
+    const active = item?.status === "processing" && !done && !failed;
+    return `<div class="pipeline-step ${done ? "done" : ""} ${active ? "active" : ""} ${failed ? "failed" : ""}">
+      <span>${done ? "[✓]" : failed ? "[!]" : active ? "[→]" : "[ ]"}</span><p>${escapeHtml(done ? `${name}完成` : `等待${name}`)}</p>
+    </div>`;
+  }).join("");
 }
 
 function riskTone(score) {
@@ -147,7 +215,7 @@ function judgementLabel(value) {
     support_buyer: "建议支持买家",
     support_seller: "建议支持商家",
     insufficient_evidence: "证据不足",
-  }[value] || "等待判断";
+  }[value] || value || "等待判断";
 }
 
 function listMarkup(items, emptyText) {
@@ -156,56 +224,20 @@ function listMarkup(items, emptyText) {
   return values.map((item) => `<p>${escapeHtml(item)}</p>`).join("");
 }
 
-function renderCompleteness(completeness = {}) {
-  const checks = [
-    ["订单证据", completeness.order_evidence],
-    ["物流证据", completeness.logistics_evidence],
-    ["聊天证据", completeness.chat_evidence],
-    ["商品规格证据", completeness.product_spec_evidence],
-    ["退款流程证据", completeness.refund_process_evidence],
-  ];
-  $("#completenessScore").textContent = `${Number(completeness.overall_score ?? 0)}%`;
-  $("#completenessSummary").textContent = completeness.summary || "暂无证据完整度结论。";
-  $("#completenessList").innerHTML = checks.map(([label, passed]) => `
-    <article class="${passed ? "passed" : "missing"}"><span>${passed ? "已覆盖" : "待补齐"}</span><strong>${escapeHtml(label)}</strong></article>
-  `).join("");
-}
-
-function renderWeightRules(rules = []) {
-  $("#weightRuleList").innerHTML = (rules || []).map((item) => `
-    <article class="${item.present ? "present" : "missing"}">
-      <div><span>权重 ${Number(item.weight ?? 0)}%</span><strong>${escapeHtml(item.evidence_type || "证据项")}</strong></div>
-      <p>${escapeHtml(item.reason || "")}</p>
-    </article>
-  `).join("") || '<p class="muted">暂未生成证据权重规则。</p>';
-}
-
-function conflictLevelLabel(level) {
-  return { high: "高冲突", medium: "中冲突", low: "低冲突", none: "无冲突" }[level] || "待判断";
-}
-
-function renderConflicts(conflicts = [], summary = "") {
-  $("#conflictSummary").textContent = summary || "暂未发现明确冲突。";
-  $("#conflictList").innerHTML = (conflicts || []).map((item) => `
-    <article class="${escapeHtml(item.conflict_level || "none")}">
-      <span>${escapeHtml(conflictLevelLabel(item.conflict_level))}</span>
-      <strong>${escapeHtml(item.claim || "用户主张待补")}</strong>
-      <p>客观凭证：${escapeHtml(item.objective_evidence || "待补")}</p>
-      <p>${escapeHtml(item.conclusion || "")}</p>
-    </article>
-  `).join("") || '<p class="muted">暂无冲突检测结果。</p>';
-}
-
-function prefixForTimeline(item) {
-  const text = `${item.event || ""} ${item.evidence || ""}`.toLowerCase();
-  if (/订单|下单|order|payment/.test(text)) return "订单";
-  if (/物流|签收|发货|快递|异常|tracking/.test(text)) return "物流";
-  if (/聊天|买家|用户|投诉|退款|差评/.test(text)) return "聊天";
-  if (/sku|规格|商品|实物/.test(text)) return "商品";
-  return "证据";
-}
-
 function renderResult(result) {
+  if (!result) {
+    $("#riskScore").textContent = "0";
+    $("#appealWinScore").textContent = "0";
+    $("#riskHeadline").textContent = "等待分析";
+    $("#judgementText").textContent = "等待分析";
+    $("#judgementReason").textContent = "";
+    $("#summaryText").textContent = "-";
+    $("#keyEvidenceList").innerHTML = '<p class="muted">暂无证据链摘要。</p>';
+    $("#reasonList").innerHTML = '<p class="muted">暂无风险原因。</p>';
+    $("#gapList").innerHTML = '<p class="muted">暂无证据缺口。</p>';
+    $("#appealText").textContent = "系统生成的申诉文本将显示在这里。";
+    return;
+  }
   const disputeRisk = Number(result.dispute_risk_score ?? result.risk_score ?? 0);
   const appealWin = Number(result.appeal_win_score ?? 0);
   const [riskLabel, riskClass] = riskTone(disputeRisk);
@@ -219,45 +251,195 @@ function renderResult(result) {
   $("#recommendation").textContent = result.recommendation || "暂无建议。";
   $("#judgementText").textContent = judgementLabel(result.judgement_direction);
   $("#judgementReason").textContent = result.judgement_reason || "暂无判决方向说明。";
-  renderCompleteness(result.evidence_completeness || {});
   $("#summaryText").textContent = result.dispute_summary || "未识别到足够证据形成纠纷总结。";
+  $("#keyEvidenceList").innerHTML = listMarkup(result.evidence_order, "暂无证据链摘要。");
   $("#reasonList").innerHTML = listMarkup(result.risk_reasons, "未识别到直接风险原因。");
   $("#gapList").innerHTML = listMarkup(result.evidence_gaps, "当前证据链暂未发现明显缺口。");
-  $("#strategyText").textContent = result.suggested_strategy || result.malicious_likelihood || "建议先补齐关键凭证后再提交。";
   $("#appealText").textContent = result.appeal_text || "";
-  $("#timeline").innerHTML = (result.timeline || []).map((item) => `
-    <article><time>${escapeHtml(item.time || "时间待补")}</time><p><span>[${prefixForTimeline(item)}]</span> ${escapeHtml(item.event || "事件待补")}</p><small>${escapeHtml(item.evidence || "")}</small></article>
-  `).join("") || '<p class="muted">暂未重建出有效时间线节点。</p>';
-  renderWeightRules(result.evidence_weight_rules || []);
-  renderConflicts(result.conflict_checks || [], result.conflict_summary || "");
-  const structured = result.structured_evidence || {};
-  const blocks = [
-    ["订单", structured.order_status || "未识别"],
-    ["物流", structured.logistics_status || "未识别"],
-    ["用户主张", (structured.user_claims || []).join(" / ") || "未识别"],
-    ["商家动作", (structured.seller_actions || []).join(" / ") || "未识别"],
-    ["时间戳", (structured.timestamps || []).join(" / ") || "未识别"],
-  ];
-  $("#structuredGrid").innerHTML = blocks.map(([label, value]) => `<article><span>${escapeHtml(label)}</span><p>${escapeHtml(value)}</p></article>`).join("");
+}
+
+function renderTrace(item) {
+  const steps = item?.trace?.steps || [];
+  $("#traceFeed").innerHTML = steps.map((step) => `
+    <article class="${escapeHtml(step.status)}">
+      <time>${formatTime(step.timestamp)}</time>
+      <strong>${step.status === "success" ? "✔" : "!"} ${escapeHtml(step.step)}</strong>
+      <p>${escapeHtml(step.output || "")}</p>
+      <small>${Number(step.duration_ms || 0)} ms${step.confidence !== undefined ? ` · confidence ${Number(step.confidence)}%` : ""}</small>
+    </article>
+  `).join("") || '<p class="muted">暂无 AI 分析过程。</p>';
+}
+
+function logMessage(item) {
+  if (item.type === "user") return item.action;
+  if (item.type === "ai") return item.reasoning || item.model_output || "AI推理日志";
+  return item.message || item.step || "系统日志";
+}
+
+function renderMiniLogs(logs) {
+  $("#caseLogFeed").innerHTML = logs.slice(0, 12).map((item) => `
+    <article class="${escapeHtml(item.level || item.type)}">
+      <span>${escapeHtml(item.type)} · ${formatTime(item.timestamp)}</span>
+      <p>${escapeHtml(logMessage(item))}</p>
+    </article>
+  `).join("") || '<p class="muted">暂无 Case 相关日志。</p>';
+}
+
+async function loadCaseLogs(caseId) {
+  if (!caseId) {
+    renderMiniLogs([]);
+    return [];
+  }
+  const headers = adminHeaders();
+  const [user, system, ai] = await Promise.all([
+    fetchJson(`/logs/user?case_id=${encodeURIComponent(caseId)}&limit=20`, { headers }),
+    fetchJson(`/logs/system?case_id=${encodeURIComponent(caseId)}&limit=20`, { headers }),
+    fetchJson(`/logs/ai?case_id=${encodeURIComponent(caseId)}&limit=20`, { headers }),
+  ]);
+  const logs = [...(user.logs || []), ...(system.logs || []), ...(ai.logs || [])]
+    .sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0));
+  renderMiniLogs(logs);
+  return logs;
+}
+
+async function selectCase(caseId) {
+  const payload = await fetchJson(`/case/${encodeURIComponent(caseId)}`);
+  state.currentCase = payload.case;
+  renderCurrentCase(state.currentCase);
+  renderResult(state.currentCase.raw_result);
+  renderTrace(state.currentCase);
+  await loadCaseLogs(caseId);
+  renderCaseList();
+  setStatus(statusLabel(state.currentCase.status), statusTone(state.currentCase.status));
+}
+
+function startPolling(caseId) {
+  clearInterval(state.pollTimer);
+  state.pollTimer = setInterval(async () => {
+    try {
+      await selectCase(caseId);
+      if (state.currentCase?.status !== "processing") {
+        clearInterval(state.pollTimer);
+        await loadCases();
+      }
+    } catch (error) {
+      clearInterval(state.pollTimer);
+      showToast(error.message);
+    }
+  }, 1300);
+}
+
+async function analyzeEvidence() {
+  if (!state.files.length) return;
+  const formData = new FormData();
+  state.files.forEach((file) => formData.append("images", file));
+  $("#analyzeBtn").disabled = true;
+  setStatus("创建 Case", "working");
+  try {
+    const payload = await fetchJson("/case/analyze", { method: "POST", body: formData });
+    state.currentCase = payload.case;
+    renderCurrentCase(state.currentCase);
+    renderResult(null);
+    renderTrace(state.currentCase);
+    await loadCases();
+    await loadCaseLogs(state.currentCase.id);
+    setStatus("分析中", "working");
+    showToast(`已创建 ${state.currentCase.id}，开始后台分析。`);
+    startPolling(state.currentCase.id);
+  } catch (error) {
+    setStatus("分析失败", "failed");
+    $("#formError").textContent = error.message;
+    showToast(error.message);
+  } finally {
+    $("#analyzeBtn").disabled = state.files.length < 1;
+  }
+}
+
+async function loadAdminLogs() {
+  const caseId = $("#logCaseFilter").value.trim();
+  const type = $("#logTypeFilter").value;
+  const types = type === "all" ? ["user", "system", "ai"] : [type];
+  persistAdminToken();
+  const queryBase = new URLSearchParams({
+    limit: String(state.logPagination.limit),
+    offset: String(state.logPagination.offset),
+  });
+  if (caseId) queryBase.set("case_id", caseId);
+  const headers = adminHeaders();
+  const results = await Promise.all(types.map((kind) => fetchJson(`/logs/${kind}?${queryBase.toString()}`, { headers })));
+  const logs = results.flatMap((item) => item.logs || []).sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0));
+  const total = results.reduce((sum, item) => sum + Number(item.pagination?.total || 0), 0);
+  state.logPagination = {
+    ...state.logPagination,
+    total,
+    has_more: results.some((item) => item.pagination?.has_more),
+  };
+  $("#adminLogRows").innerHTML = logs.map((item) => `
+    <tr class="${item.level === "error" ? "error-row" : ""}">
+      <td>${formatTime(item.timestamp)}</td>
+      <td>${escapeHtml(item.type)}</td>
+      <td class="file-name">${escapeHtml(item.case_id || "-")}</td>
+      <td>${escapeHtml(item.level || item.action || "-")}</td>
+      <td>${escapeHtml(logMessage(item)).slice(0, 240)}</td>
+      <td>${item.duration_ms !== undefined ? `${Number(item.duration_ms)} ms` : "-"}</td>
+    </tr>
+  `).join("") || '<tr class="empty-row"><td colspan="6">暂无日志。</td></tr>';
+  renderLogPager();
+}
+
+function adminHeaders() {
+  const token = localStorage.getItem("admin_token") || "";
+  return token ? { "X-Admin-Token": token } : {};
+}
+
+function persistAdminToken() {
+  const input = $("#adminTokenInput");
+  const token = input.value.trim();
+  if (token) localStorage.setItem("admin_token", token);
+}
+
+function hydrateAdminToken() {
+  $("#adminTokenInput").value = localStorage.getItem("admin_token") || "";
+}
+
+function renderLogPager() {
+  const page = Math.floor(state.logPagination.offset / state.logPagination.limit) + 1;
+  const totalPages = Math.max(1, Math.ceil((state.logPagination.total || 0) / state.logPagination.limit));
+  $("#logPageText").textContent = `${page} / ${totalPages}`;
+  $("#logPrevBtn").disabled = state.logPagination.offset <= 0;
+  $("#logNextBtn").disabled = !state.logPagination.has_more;
 }
 
 async function copyAppeal() {
   const text = $("#appealText").textContent.trim();
-  if (!text) return;
+  if (!text || text === "系统生成的申诉文本将显示在这里。") return;
   await navigator.clipboard.writeText(text);
   showToast("申诉文本已复制。");
 }
 
 function resetAll() {
   state.files = [];
-  state.result = null;
-  stopProgress();
-  $("#uploadPanel").hidden = false;
-  $("#resultPanel").hidden = true;
+  clearInterval(state.pollTimer);
   $("#fileInput").value = "";
-  $("#progressBar").style.width = "0%";
   setStatus("等待上传");
   updateUploadState();
+}
+
+function showWorkspace() {
+  $("#workspaceView").hidden = false;
+  $("#logsView").hidden = true;
+  $("#workspaceNav").classList.add("active");
+  $("#logsNav").classList.remove("active");
+  history.replaceState(null, "", "/");
+}
+
+async function showLogs() {
+  $("#workspaceView").hidden = true;
+  $("#logsView").hidden = false;
+  $("#workspaceNav").classList.remove("active");
+  $("#logsNav").classList.add("active");
+  history.replaceState(null, "", "/admin/logs");
+  await loadAdminLogs();
 }
 
 function bindEvents() {
@@ -265,6 +447,39 @@ function bindEvents() {
   $("#analyzeBtn").addEventListener("click", analyzeEvidence);
   $("#copyAppealBtn").addEventListener("click", copyAppeal);
   $("#resetBtn").addEventListener("click", resetAll);
+  $("#refreshBtn").addEventListener("click", async () => {
+    await loadCases();
+    if (state.currentCase) await selectCase(state.currentCase.id);
+  });
+  $("#reloadCasesBtn").addEventListener("click", loadCases);
+  $("#casePrevBtn").addEventListener("click", async () => {
+    state.casePagination.offset = Math.max(0, state.casePagination.offset - state.casePagination.limit);
+    await loadCases();
+  });
+  $("#caseNextBtn").addEventListener("click", async () => {
+    if (!state.casePagination.has_more) return;
+    state.casePagination.offset += state.casePagination.limit;
+    await loadCases();
+  });
+  $("#workspaceNav").addEventListener("click", showWorkspace);
+  $("#logsNav").addEventListener("click", showLogs);
+  $("#loadLogsBtn").addEventListener("click", async () => {
+    state.logPagination.offset = 0;
+    await loadAdminLogs();
+  });
+  $("#logPrevBtn").addEventListener("click", async () => {
+    state.logPagination.offset = Math.max(0, state.logPagination.offset - state.logPagination.limit);
+    await loadAdminLogs();
+  });
+  $("#logNextBtn").addEventListener("click", async () => {
+    if (!state.logPagination.has_more) return;
+    state.logPagination.offset += state.logPagination.limit;
+    await loadAdminLogs();
+  });
+  $("#caseList").addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-case-id]");
+    if (button) await selectCase(button.dataset.caseId);
+  });
   $("#fileRows").addEventListener("click", (event) => {
     const button = event.target.closest("[data-remove]");
     if (!button) return;
@@ -283,5 +498,14 @@ function bindEvents() {
   dropzone.addEventListener("drop", (event) => addFiles(event.dataTransfer.files));
 }
 
-bindEvents();
-updateUploadState();
+async function init() {
+  bindEvents();
+  hydrateAdminToken();
+  updateUploadState();
+  renderCurrentCase(null);
+  renderResult(null);
+  await loadCases();
+  if (location.pathname === "/admin/logs") await showLogs();
+}
+
+init().catch((error) => showToast(error.message));

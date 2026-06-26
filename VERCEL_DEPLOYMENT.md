@@ -35,6 +35,7 @@
 |---|---|---|
 | `OPENAI_API_KEY` | 你的 OpenAI API Key | 真实 OCR 模式必填 |
 | `OPENAI_MODEL` | `gpt-4o-mini` | 可选 |
+| `ADMIN_TOKEN` | 自定义后台日志访问令牌 | 公开部署建议必填 |
 
 不建议在 Vercel 配置：
 
@@ -98,3 +99,5 @@ POST multipart/form-data
 2. 图片总大小限制仍由后端控制为 25MB，但真实部署还会受 Vercel 请求大小和函数执行时长限制影响。
 3. 真实 OCR 模式下，请重点观察函数执行时间；如图片过大或 OCR 调用过慢，可能需要压缩图片或升级 Vercel 函数时长配置。
 4. `dist/` 是构建产物，已被 `.gitignore` 排除，Vercel 会在部署时重新运行 `npm run build` 生成。
+5. 当前 Case 历史默认写入 JSON 文件，本地开发可用；Vercel 生产环境如需长期历史，请接入 Vercel KV / Postgres / Supabase。
+6. 设置 `ADMIN_TOKEN` 后，前端 `/admin/logs` 页面需要输入对应 Token 才能查询日志。
