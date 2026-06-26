@@ -41,10 +41,19 @@ python server.py
 
 如需真实 OCR / Vision 分析，请参考 `.env.example`，在本机或部署平台的环境变量面板中配置 `OPENAI_API_KEY` 与 `OPENAI_MODEL`。
 
+## Vercel 部署
+
+项目已包含 `vercel.json` 与 `api/analyze.py`，可以作为静态前端 + Python Serverless API 部署到 Vercel。
+
+详细配置见：`VERCEL_DEPLOYMENT.md`
+
 ## 核心文件
 
 - `server.py`：后端接口、演示模式、OpenAI Vision 调用、评分护栏
 - `index.html`：上传页、流水线页、结果页结构
 - `app.js`：上传交互、接口调用、结果渲染、复制申诉文本
 - `styles.css`：中文法务控制台 UI 样式
+- `api/analyze.py`：Vercel Python API 入口
+- `vercel.json`：Vercel 构建、输出目录与函数配置
+- `VERCEL_DEPLOYMENT.md`：Vercel 部署说明
 - `qa_outputs/ocr_noise_guardrail_summary.md`：最新 QA 回归汇总
