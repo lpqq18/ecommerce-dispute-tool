@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>电商纠纷证据包助手</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <strong>电商纠纷证据包助手</strong>
+      <div class="top-status"><span class="status-dot" id="statusDot"></span><span id="statusPill">等待上传</span><button id="resetBtn" type="button">重置</button></div>
+    </header>
+
+    <main class="app-shell">
+      <section class="upload-screen" id="uploadPanel">
+        <p class="section-label">证据接入</p>
+        <h1>上传纠纷证据</h1>
+        <p class="lead">支持聊天记录、订单详情、物流凭证、商品规格和售后截图。系统会生成时间线、双评分、判决方向、冲突检测和申诉文本。</p>
+        <label class="dropzone" id="dropzone">
+          <input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp" multiple />
+          <span>↑</span>
+          <strong>拖拽文件至此处，或点击本地上传</strong>
+          <small>支持 PNG / JPG / WebP，最多 5 张</small>
+        </label>
+        <div class="matrix-head"><span>已选证据组件</span><strong id="imageCount">0 / 5</strong></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>文件名</th><th>单据属性</th><th>大小</th><th>操作</th></tr></thead>
+            <tbody id="fileRows"><tr class="empty-row"><td colspan="4">尚未选择证据组件。</td></tr></tbody>
+          </table>
+        </div>
+        <p class="form-error" id="formError"></p>
+        <button class="primary-btn" id="analyzeBtn" type="button" disabled>开始分析纠纷案件</button>
+      </section>
+
+      <section class="pipeline-card" id="loadingPanel" hidden>
+        <p class="section-label">AI 分析流水线</p>
+        <h2>分析任务执行中</h2>
+        <div class="pipeline-steps">
+          <div class="pipeline-step active"><span>[→]</span><p>步骤 1：提取 OCR 文本与元数据...</p></div>
+          <div class="pipeline-step"><span>[ ]</span><p>步骤 2：重建交易时间线...</p></div>
+          <div class="pipeline-step"><span>[ ]</span><p>步骤 3：执行证据权重与冲突检测...</p></div>
+          <div class="pipeline-step"><span>[ ]</span><p>步骤 4：生成双评分与申诉报告...</p></div>
+        </div>
+        <div class="progress-rail"><div id="progressBar"></div></div>
+      </section>
+
+      <section class="dashboard" id="resultPanel" hidden>
+        <div class="dashboard-left">
+          <section class="panel">
+            <p class="section-label">模块 A：双评分决策</p>
+            <div class="score-console">
+              <div class="score-card" id="riskCard"><span id="riskLevel">纠纷风险分</span><strong id="riskScore">0</strong><p id="recommendation">等待分析。</p></div>
+              <div class="score-card appeal" id="appealScoreCard"><span>申诉胜率分</span><strong id="appealWinScore">0</strong><p id="scoreExplanation">风险高不等于申诉胜率高。</p></div>
+            </div>
+            <div class="decision-grid">
+              <article><span>纠纷类型</span><strong id="riskHeadline">等待分析</strong></article>
+              <article><span>判决方向</span><strong id="judgementText">等待分析</strong><p id="judgementReason"></p></article>
+              <article><span>证据完整度</span><strong id="completenessScore">0%</strong><p id="completenessSummary"></p></article>
+            </div>
+          </section>
+          <section class="panel">
+            <p class="section-label">模块 B：证据摘要与矛盾点</p>
+            <div class="summary-grid">
+              <article><h3>纠纷总结</h3><p id="summaryText">-</p></article>
+              <article><h3>风险原因</h3><div class="finding-list" id="reasonList"></div></article>
+              <article><h3>处理策略</h3><p id="strategyText">-</p></article>
+              <article><h3>证据缺口</h3><div class="finding-list" id="gapList"></div></article>
+            </div>
+          </section>
+          <section class="panel">
+            <div class="doc-head"><p class="section-label">模块 C：平台申诉文本</p><button id="copyAppealBtn" type="button">复制文本</button></div>
+            <pre id="appealText">系统生成的申诉文本将显示在这里。</pre>
+          </section>
+        </div>
+        <aside class="dashboard-right">
+          <section><p class="section-label">法证时间线</p><div class="timeline" id="timeline"></div></section>
+          <section><p class="section-label">证据权重规则</p><div class="rule-feed" id="weightRuleList"></div></section>
+          <section><p class="section-label">冲突检测</p><div class="conflict-summary" id="conflictSummary">等待分析。</div><div class="conflict-feed" id="conflictList"></div></section>
+          <section><p class="section-label">证据完整度检查</p><div class="checklist-feed" id="completenessList"></div></section>
+          <section><p class="section-label">结构化证据</p><div class="structured-feed" id="structuredGrid"></div></section>
+        </aside>
+      </section>
+    </main>
+
+    <div class="toast" id="toast" hidden></div>
+    <script src="./app.js"></script>
+  </body>
+</html>
