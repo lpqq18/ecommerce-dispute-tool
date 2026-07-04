@@ -97,8 +97,22 @@
         </section>
 
         <section class="panel">
+          <p class="section-label">结构化证据</p>
+          <div class="structured-grid" id="structuredEvidence">
+            <p class="muted">等待证据结构化。</p>
+          </div>
+        </section>
+
+        <section class="panel">
           <div class="doc-head"><p class="section-label">平台申诉文本</p><button id="copyAppealBtn" type="button">复制文本</button></div>
           <pre id="appealText">系统生成的申诉文本将显示在这里。</pre>
+        </section>
+
+        <section class="panel">
+          <p class="section-label">OCR 原始结果</p>
+          <div class="ocr-audit" id="ocrAudit">
+            <p class="muted">等待 OCR 解析。</p>
+          </div>
         </section>
 
         <section class="panel">
@@ -127,6 +141,7 @@
             <option value="user">用户行为</option>
             <option value="system">系统运行</option>
             <option value="ai">AI推理</option>
+            <option value="observability">观测事件</option>
           </select>
           <input id="adminTokenInput" type="password" placeholder="Admin Token（可选）" />
           <button id="loadLogsBtn" type="button">查询</button>
@@ -146,6 +161,6 @@
     </main>
 
     <div class="toast" id="toast" hidden></div>
-    <script src="/app.js?v=1.1"></script>
+    <script src="/app.js?v=1.2"></script>
   </body>
 </html>

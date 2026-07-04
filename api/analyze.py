@@ -9,6 +9,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from ocr_service import run_ocr  # noqa: E402
+from privacy_guard import redact_value  # noqa: E402
 from server import MAX_IMAGES, MAX_UPLOAD_BYTES, analyze_images  # noqa: E402
 
 
@@ -33,7 +35,10 @@ async def handle_analyze(images: List[UploadFile] = File(...)):
         normalized.append({"mime": image.content_type, "bytes": content, "filename": image.filename})
 
     try:
-        return JSONResponse(analyze_images(normalized))
+        ocr_result = run_ocr(normalized)
+        result = analyze_images(normalized, ocr_result)
+        result["ocr_result"] = ocr_result
+        return JSONResponse(redact_value(result))
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

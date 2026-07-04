@@ -3,8 +3,8 @@ const path = require("path");
 
 const root = path.resolve(__dirname, "..");
 const dist = path.join(root, "dist");
-const files = ["index.html", "app.js", "styles.css", "server.py", "case_store.py", "requirements.txt", "README.md", ".env.example", "vercel.json"];
-const directories = ["api"];
+const files = ["index.html", "app.js", "styles.css", "server.py", "case_store.py", "ocr_service.py", "evidence_engine.py", "workflow_engine.py", "observability.py", "privacy_guard.py", "storage_adapter.py", "requirements.txt", "README.md", ".env.example", "vercel.json"];
+const directories = ["api", "docs"];
 
 fs.rmSync(dist, { recursive: true, force: true });
 fs.mkdirSync(dist, { recursive: true });

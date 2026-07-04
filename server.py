@@ -14,6 +14,7 @@ from case_store import (
     attach_files,
     create_case,
     get_case,
+    get_storage_info,
     list_cases,
     list_logs,
     log_ai,
@@ -21,7 +22,14 @@ from case_store import (
     log_user,
     mark_case_done,
     mark_case_failed,
+    set_case_ocr,
+    update_case_status,
 )
+from evidence_engine import build_rule_based_result
+from observability import OBSERVABILITY_ENABLED, OBSERVABILITY_WEBHOOK_URL
+from ocr_service import OCR_API_URL, OCR_MIN_TEXT_CHARS, OCR_PROVIDER, OCR_REQUIRE_REAL, ocr_prompt_context, run_ocr
+from privacy_guard import REDACTION_ENABLED
+from workflow_engine import WorkflowNode, run_workflow
 
 try:
     import requests
@@ -35,6 +43,7 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 MAX_IMAGES = 5
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+IMAGE_CACHE = {}
 
 
 CASE_TYPES = ["未收到货纠纷", "货不对板", "退款争议", "恶意差评", "物流异常", "无法判断"]
@@ -167,7 +176,8 @@ def response_schema():
     }
 
 
-def build_prompt():
+def build_prompt(ocr_result=None):
+    ocr_context = ocr_prompt_context(ocr_result)
     return """
 你是电商纠纷证据推理分析员，不是客服机器人。
 请从用户上传的聊天截图、订单截图、物流截图、商品规格截图、售后截图中提取证据，并生成平台申诉材料。
@@ -210,18 +220,21 @@ def build_prompt():
 - 风险高不等于申诉胜率高。若买家恶意风险高且商家证据完整，dispute_risk_score 和 appeal_win_score 可以同时较高。
 - appeal_text 使用中文，语气正式，适合淘宝/拼多多/抖音小商家提交平台。
 - 只返回符合 schema 的 JSON。
-""".strip()
+""".strip() + ("\n\n" + ocr_context if ocr_context else "")
 
 
-def demo_result(images):
+def demo_result(images, ocr_result=None):
     file_count = len(images)
     file_names = [item.get("filename") or f"截图 {index + 1}" for index, item in enumerate(images)]
+    ocr_enabled = bool(ocr_result and ocr_result.get("real_ocr"))
+    ocr_note = "真实 OCR 已完成，当前未配置 OPENAI_API_KEY，因此仅展示 OCR 原文与演示判断。" if ocr_enabled else "真实 OCR 未启用，当前使用演示判断。"
     return {
         "demo_mode": True,
+        "ocr_mode": ocr_result.get("provider") if ocr_result else "demo",
         "dispute_type": "未收到货纠纷",
         "structured_evidence": {
-            "order_status": "演示数据：订单已付款并已发货，等待接入真实视觉模型后自动识别截图内容。",
-            "logistics_status": "演示数据：物流显示疑似已签收，但当前未做真实 OCR。",
+            "order_status": f"演示数据：订单已付款并已发货。{ocr_note}",
+            "logistics_status": f"演示数据：物流显示疑似已签收。{ocr_note}",
             "user_claims": ["买家声称未收到货", "要求退款或平台介入"],
             "seller_actions": ["商家已上传聊天、订单或物流截图", f"本次共接收 {file_count} 张证据图片"],
             "timestamps": ["时间待补：真实模式下将从截图中提取聊天时间、发货时间、签收时间"],
@@ -234,7 +247,7 @@ def demo_result(images):
         "risk_score": 72,
         "dispute_risk_score": 72,
         "appeal_win_score": 81,
-        "score_explanation": "演示模式：纠纷风险较高，因为买家主张与物流状态可能冲突；申诉胜率较高，因为假设商家已具备物流签收与订单发货证据。",
+        "score_explanation": f"演示模式：纠纷风险较高，因为买家主张与物流状态可能冲突；申诉胜率较高，因为假设商家已具备物流签收与订单发货证据。{ocr_note}",
         "risk_reasons": [
             "演示推演：买家主张与物流签收状态可能存在冲突。",
             "演示推演：当前证据链包含多张截图，但未验证是否覆盖订单号、签收时间与聊天上下文。",
@@ -423,14 +436,16 @@ def normalize_result_scores(result):
     return result
 
 
-def analyze_images(images):
+def analyze_images(images, ocr_result=None):
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        return normalize_result_scores(demo_result(images))
+        if ocr_result and ocr_result.get("real_ocr") and ocr_result.get("text"):
+            return normalize_result_scores(build_rule_based_result(images, ocr_result))
+        return normalize_result_scores(demo_result(images, ocr_result))
     if requests is None:
         raise RuntimeError("当前 Python 环境缺少 requests，无法调用 OpenAI API。")
 
-    content = [{"type": "input_text", "text": build_prompt()}]
+    content = [{"type": "input_text", "text": build_prompt(ocr_result)}]
     for image in images:
         data_url = f"data:{image['mime']};base64,{base64.b64encode(image['bytes']).decode('ascii')}"
         content.append({"type": "input_image", "image_url": data_url})
@@ -462,29 +477,34 @@ def analyze_images(images):
     return normalize_result_scores(extract_json(extract_output_text(response.json())))
 
 
-def run_case_analysis(case_id, images):
-    total_start = time.perf_counter()
-    log_system("info", "analysis_start", "案件分析任务已启动", case_id)
-    try:
-        step_start = time.perf_counter()
-        add_trace_step(case_id, "OCR解析", "success", f"已接收 {len(images)} 张截图，进入文本与元数据解析队列。", int((time.perf_counter() - step_start) * 1000))
-        log_system("info", "ocr", "OCR解析阶段完成", case_id, int((time.perf_counter() - step_start) * 1000))
+def build_analysis_nodes(case_id):
+    def ocr_node(state):
+        ocr_result = run_ocr(state["images"])
+        set_case_ocr(case_id, ocr_result)
+        return {
+            "message": ocr_result.get("summary") or "OCR 解析完成。",
+            "state": {"ocr_result": ocr_result},
+        }
 
-        step_start = time.perf_counter()
-        result = analyze_images(images)
+    def evidence_node(state):
+        result = analyze_images(state["images"], state.get("ocr_result"))
+        result["ocr_result"] = state.get("ocr_result")
         extract_summary = result.get("dispute_summary") or result.get("structured_evidence", {}).get("order_status") or "证据抽取完成。"
-        add_trace_step(case_id, "证据抽取", "success", extract_summary, int((time.perf_counter() - step_start) * 1000))
-        log_system("info", "evidence_extract", "证据结构化完成", case_id, int((time.perf_counter() - step_start) * 1000))
+        return {
+            "message": extract_summary,
+            "state": {"result": result},
+        }
 
-        step_start = time.perf_counter()
-        conflict_output = result.get("conflict_summary") or "暂未发现明确冲突。"
-        add_trace_step(case_id, "冲突分析", "success", conflict_output, int((time.perf_counter() - step_start) * 1000))
-        log_system("info", "conflict_analysis", "冲突分析完成", case_id, int((time.perf_counter() - step_start) * 1000))
+    def conflict_node(state):
+        result = state.get("result") or {}
+        return {
+            "message": result.get("conflict_summary") or "暂未发现明确冲突。",
+            "state": {},
+        }
 
-        step_start = time.perf_counter()
+    def final_node(state):
+        result = state.get("result") or {}
         confidence = int(result.get("appeal_win_score") or 0)
-        final_output = result.get("judgement_reason") or result.get("recommendation") or "最终判断已生成。"
-        add_trace_step(case_id, "最终判断", "success", final_output, int((time.perf_counter() - step_start) * 1000), confidence)
         log_ai(
             case_id,
             "电商纠纷证据结构化与申诉胜率分析",
@@ -492,6 +512,26 @@ def run_case_analysis(case_id, images):
             result.get("score_explanation") or result.get("judgement_reason") or "",
             confidence,
         )
+        return {
+            "message": result.get("judgement_reason") or result.get("recommendation") or "最终判断已生成。",
+            "confidence": confidence,
+            "state": {},
+        }
+
+    return [
+        WorkflowNode("ocr", "OCR解析", ocr_node, max_retries=1),
+        WorkflowNode("evidence_extract", "证据抽取", evidence_node, max_retries=0),
+        WorkflowNode("conflict_analysis", "冲突分析", conflict_node, max_retries=0),
+        WorkflowNode("final_judgement", "最终判断", final_node, max_retries=0),
+    ]
+
+
+def run_case_analysis(case_id, images):
+    total_start = time.perf_counter()
+    log_system("info", "analysis_start", "案件分析任务已启动", case_id)
+    try:
+        workflow_state = run_workflow(case_id, build_analysis_nodes(case_id), {"images": images})
+        result = workflow_state.get("result") or {}
         case = mark_case_done(case_id, result)
         log_system("info", "analysis_done", "案件分析任务已完成", case_id, int((time.perf_counter() - total_start) * 1000))
         return case
@@ -504,6 +544,7 @@ def run_case_analysis(case_id, images):
 
 
 def start_case_analysis(case_id, images):
+    IMAGE_CACHE[case_id] = images
     thread = threading.Thread(target=run_case_analysis, args=(case_id, images), daemon=True)
     thread.start()
     return thread
@@ -514,6 +555,29 @@ def int_query(query, key, default):
         return int(query.get(key, default))
     except (TypeError, ValueError):
         return default
+
+
+def runtime_config() -> dict:
+    return {
+        "ocr": {
+            "provider": OCR_PROVIDER,
+            "external_configured": bool(OCR_API_URL),
+            "require_real": OCR_REQUIRE_REAL,
+            "min_text_chars": OCR_MIN_TEXT_CHARS,
+        },
+        "ai": {
+            "openai_configured": bool(os.getenv("OPENAI_API_KEY")),
+            "model": OPENAI_MODEL,
+        },
+        "privacy": {
+            "redaction_enabled": REDACTION_ENABLED,
+        },
+        "observability": {
+            "enabled": OBSERVABILITY_ENABLED,
+            "webhook_configured": bool(OBSERVABILITY_WEBHOOK_URL),
+        },
+        "storage": get_storage_info(),
+    }
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -542,6 +606,18 @@ class Handler(SimpleHTTPRequestHandler):
     def read_images(self):
         images, _fields = self.read_multipart()
         return images
+
+    def read_json_body(self):
+        content_length = int(self.headers.get("Content-Length", 0) or 0)
+        if content_length <= 0:
+            return {}
+        body = self.rfile.read(content_length)
+        if not body:
+            return {}
+        try:
+            return json.loads(body.decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError("JSON 请求体格式异常。") from exc
 
     def read_multipart(self):
         content_length = int(self.headers.get("Content-Length", 0) or 0)
@@ -591,6 +667,9 @@ class Handler(SimpleHTTPRequestHandler):
             page = list_cases(limit=limit, offset=offset)
             self.send_json(200, {"cases": page["items"], "pagination": page["pagination"]})
             return
+        if path == "/api/runtime":
+            self.send_json(200, runtime_config())
+            return
         if path.startswith("/case/"):
             case_id = path.split("/", 2)[2]
             case = get_case(case_id)
@@ -600,7 +679,7 @@ class Handler(SimpleHTTPRequestHandler):
             log_user(case_id, "view_case", {})
             self.send_json(200, {"case": case})
             return
-        if path in ("/logs/user", "/logs/system", "/logs/ai"):
+        if path in ("/logs/user", "/logs/system", "/logs/ai", "/logs/observability"):
             if not self.admin_authorized(query):
                 self.send_json(401, {"error": "需要管理员访问令牌。"})
                 return
@@ -633,6 +712,7 @@ class Handler(SimpleHTTPRequestHandler):
                 if not case:
                     self.send_json(404, {"error": "案件不存在"})
                     return
+                IMAGE_CACHE[case_id] = images
                 log_user(case_id, "upload_files", {"file_count": len(images)})
                 log_system("info", "case_upload", "证据文件已绑定到案件", case_id)
                 self.send_json(200, {"case": case})
@@ -647,10 +727,30 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json(202, {"case": get_case(case_id)})
                 return
 
+            if path == "/case/retry":
+                payload = self.read_json_body()
+                case_id = payload.get("case_id") or ""
+                if not case_id:
+                    raise ValueError("缺少 case_id。")
+                case = get_case(case_id)
+                if not case:
+                    self.send_json(404, {"error": "案件不存在"})
+                    return
+                images = IMAGE_CACHE.get(case_id)
+                if not images:
+                    raise ValueError("未找到原始图片缓存，请重新上传证据后再分析。")
+                update_case_status(case_id, "retrying")
+                log_user(case_id, "retry_analysis", {"file_count": len(images)})
+                log_system("warn", "analysis_retry", "用户触发案件重试分析", case_id)
+                start_case_analysis(case_id, images)
+                self.send_json(202, {"case": get_case(case_id)})
+                return
+
             if path == "/api/analyze":
                 images = self.read_images()
                 case = create_case(images)
                 case_id = case["id"]
+                IMAGE_CACHE[case_id] = images
                 log_user(case_id, "start_analysis", {"file_count": len(images), "mode": "sync_compat"})
                 run_case_analysis(case_id, images)
                 final_case = get_case(case_id)

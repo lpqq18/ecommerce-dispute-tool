@@ -27,13 +27,20 @@
 
 ## 环境变量
 
-基础演示模式不需要配置真实 OCR Key。未配置 `OPENAI_API_KEY` 时，系统会自动使用本地演示模式。
+基础演示模式不需要配置真实 OCR Key。未配置 `OPENAI_API_KEY` 与 `OCR_API_URL` 时，系统会自动使用本地演示模式。
 
 如需真实 OCR / Vision 分析，请在 Vercel 项目设置中添加：
 
 | Key | Value | 必填 |
 |---|---|---|
-| `OPENAI_API_KEY` | 你的 OpenAI API Key | 真实 OCR 模式必填 |
+| `OCR_PROVIDER` | `external` | 接外部 OCR 服务时建议填写 |
+| `OCR_API_URL` | 你的 OCR 微服务地址 | 真实 OCR 必填 |
+| `OCR_API_TOKEN` | OCR 服务访问令牌 | 按你的 OCR 服务要求 |
+| `OCR_TIMEOUT_SECONDS` | `60` | 可选 |
+| `OBSERVABILITY_ENABLED` | `1` | 可选 |
+| `OBSERVABILITY_WEBHOOK_URL` | 外部观测事件接收地址 | 接外部观测平台时填写 |
+| `OBSERVABILITY_WEBHOOK_TOKEN` | 外部观测平台令牌 | 按平台要求 |
+| `OPENAI_API_KEY` | 你的 OpenAI API Key | 真实 AI 结构化分析必填 |
 | `OPENAI_MODEL` | `gpt-4o-mini` | 可选 |
 | `ADMIN_TOKEN` | 自定义后台日志访问令牌 | 公开部署建议必填 |
 
@@ -52,14 +59,15 @@
 4. Framework Preset 选择 `Other`。
 5. 确认 Build Command 为 `npm run build`。
 6. 确认 Output Directory 为 `dist`。
-7. 如需真实 OCR，在 Environment Variables 添加 `OPENAI_API_KEY`。
-8. 点击 `Deploy`。
+7. 如需真实 OCR，在 Environment Variables 添加 `OCR_PROVIDER=external` 与 `OCR_API_URL`。
+8. 如需真实 AI 结构化分析，继续添加 `OPENAI_API_KEY`。
+9. 点击 `Deploy`。
 
 ## 本地部署前自检
 
 ```bash
 npm run build
-python -m py_compile server.py api/analyze.py
+python -m py_compile server.py case_store.py ocr_service.py api/analyze.py
 ```
 
 通过后应看到：
@@ -68,11 +76,23 @@ python -m py_compile server.py api/analyze.py
 - `dist/app.js`
 - `dist/styles.css`
 - `dist/server.py`
+- `dist/ocr_service.py`
+- `dist/evidence_engine.py`
+- `dist/observability.py`
 - `dist/requirements.txt`
 
 ## API 路径
 
-前端当前调用：
+本地完整 Case 工作台调用：
+
+```text
+/case/analyze
+/cases
+/case/:id
+/logs/*
+```
+
+Vercel 简化分析接口：
 
 ```text
 /api/analyze
@@ -97,7 +117,7 @@ POST multipart/form-data
 
 1. Vercel Function 是无状态函数，不适合保存用户上传文件。当前项目没有文件存储，符合 MVP 要求。
 2. 图片总大小限制仍由后端控制为 25MB，但真实部署还会受 Vercel 请求大小和函数执行时长限制影响。
-3. 真实 OCR 模式下，请重点观察函数执行时间；如图片过大或 OCR 调用过慢，可能需要压缩图片或升级 Vercel 函数时长配置。
+3. 真实 OCR 模式下，请重点观察函数执行时间；如图片过大或 OCR 调用过慢，建议把 PaddleOCR 独立部署成 OCR 微服务，再由 Vercel 调用 `OCR_API_URL`。
 4. `dist/` 是构建产物，已被 `.gitignore` 排除，Vercel 会在部署时重新运行 `npm run build` 生成。
 5. 当前 Case 历史默认写入 JSON 文件，本地开发可用；Vercel 生产环境如需长期历史，请接入 Vercel KV / Postgres / Supabase。
 6. 设置 `ADMIN_TOKEN` 后，前端 `/admin/logs` 页面需要输入对应 Token 才能查询日志。

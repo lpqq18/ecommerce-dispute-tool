@@ -1,16 +1,14 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from copy import deepcopy
-from pathlib import Path
-import json
-import os
 import threading
 import time
 import uuid
 
+from privacy_guard import redact_filename, redact_value
+from storage_adapter import get_store_adapter, storage_info
 
-DATA_DIR = Path(os.getenv("CASE_DATA_DIR") or ("/tmp/ecommerce-dispute-tool" if os.getenv("VERCEL") else "data"))
-STORE_PATH = DATA_DIR / "case_store.json"
+STORE_ADAPTER = get_store_adapter()
 LOCK = threading.RLock()
 MAX_PAGE_LIMIT = 100
 
@@ -20,6 +18,7 @@ EMPTY_STORE = {
         "user": [],
         "system": [],
         "ai": [],
+        "observability": [],
     },
 }
 
@@ -34,24 +33,19 @@ def iso_now() -> str:
 
 def read_store() -> dict:
     with LOCK:
-        if not STORE_PATH.exists():
-            return deepcopy(EMPTY_STORE)
-        try:
-            data = json.loads(STORE_PATH.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return deepcopy(EMPTY_STORE)
+        data = STORE_ADAPTER.read(EMPTY_STORE)
         data.setdefault("cases", {})
         data.setdefault("logs", {})
         data["logs"].setdefault("user", [])
         data["logs"].setdefault("system", [])
         data["logs"].setdefault("ai", [])
+        data["logs"].setdefault("observability", [])
         return data
 
 
 def write_store(data: dict) -> None:
     with LOCK:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        STORE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        STORE_ADAPTER.write(data)
 
 
 def update_store(mutator):
@@ -69,7 +63,7 @@ def public_case(case: dict | None) -> dict | None:
 def file_metadata(images: list[dict]) -> list[dict]:
     files = []
     for index, image in enumerate(images):
-        name = image.get("filename") or f"证据截图 {index + 1}"
+        name = redact_filename(image.get("filename") or f"evidence-image-{index + 1}")
         mime = image.get("mime") or "application/octet-stream"
         content = image.get("bytes") or b""
         files.append(
@@ -90,13 +84,19 @@ def create_case(images: list[dict] | None = None) -> dict:
         "id": case_id,
         "created_at": timestamp,
         "updated_at": timestamp,
-        "status": "processing",
+        "status": "queued",
         "files": file_metadata(images or []),
+        "ocr_result": None,
         "result": None,
         "raw_result": None,
         "trace": {
             "case_id": case_id,
             "steps": [],
+        },
+        "workflow_state": {
+            "current_node": "",
+            "attempt": 0,
+            "last_error": "",
         },
     }
 
@@ -158,19 +158,49 @@ def attach_files(case_id: str, images: list[dict]) -> dict | None:
     return update_store(mutate)
 
 
+def set_case_ocr(case_id: str, ocr_result: dict) -> dict | None:
+    return update_case(case_id, ocr_result=redact_value(ocr_result))
+
+
+def update_case_status(case_id: str, status: str) -> dict | None:
+    return update_case(case_id, status=status)
+
+
+def set_case_workflow_state(case_id: str, current_node: str = "", attempt: int = 0, last_error: str = "") -> dict | None:
+    return update_case(
+        case_id,
+        workflow_state={
+            "current_node": current_node,
+            "attempt": attempt,
+            "last_error": last_error,
+        },
+    )
+
+
 def normalize_duration(duration_ms: int) -> int:
     if duration_ms <= 0:
         return 1
     return int(duration_ms)
 
 
-def add_trace_step(case_id: str, step: str, status: str, output: str, duration_ms: int = 0, confidence: int | None = None) -> None:
+def add_trace_step(
+    case_id: str,
+    step: str,
+    status: str,
+    output: str,
+    duration_ms: int = 0,
+    confidence: int | None = None,
+    node_id: str = "",
+    attempt: int = 1,
+) -> None:
     trace_step = {
         "step": step,
         "status": status,
         "duration_ms": normalize_duration(duration_ms),
-        "output": output,
+        "output": redact_value(output),
         "timestamp": now_ms(),
+        "node_id": node_id,
+        "attempt": attempt,
     }
     if confidence is not None:
         trace_step["confidence"] = confidence
@@ -194,7 +224,7 @@ def log_user(case_id: str, action: str, metadata: dict | None = None, user_id: s
         "case_id": case_id,
         "action": action,
         "timestamp": now_ms(),
-        "metadata": metadata or {},
+        "metadata": redact_value(metadata or {}),
     }
     append_log("user", entry)
 
@@ -204,7 +234,7 @@ def log_system(level: str, step: str, message: str, case_id: str = "", duration_
         "type": "system",
         "level": level,
         "step": step,
-        "message": message,
+        "message": redact_value(message),
         "case_id": case_id,
         "duration_ms": normalize_duration(duration_ms) if case_id else int(duration_ms or 0),
         "timestamp": now_ms(),
@@ -216,13 +246,34 @@ def log_ai(case_id: str, input_prompt: str, model_output: str, reasoning: str, c
     entry = {
         "type": "ai",
         "case_id": case_id,
-        "input_prompt": input_prompt,
-        "model_output": model_output,
-        "reasoning": reasoning,
+        "input_prompt": redact_value(input_prompt),
+        "model_output": redact_value(model_output),
+        "reasoning": redact_value(reasoning),
         "confidence": confidence,
         "timestamp": now_ms(),
     }
     append_log("ai", entry)
+
+
+def log_observability(case_id: str, event: dict) -> None:
+    entry = {
+        "type": "observability",
+        "case_id": case_id,
+        "trace_id": event.get("trace_id", ""),
+        "observation_id": event.get("observation_id", ""),
+        "node_id": event.get("node_id", ""),
+        "name": event.get("name", ""),
+        "status": event.get("status", ""),
+        "duration_ms": event.get("duration_ms", 0),
+        "external_delivery": event.get("external_delivery", "not_configured"),
+        "timestamp": event.get("timestamp", now_ms()),
+        "metadata": redact_value(event.get("metadata")),
+        "input": redact_value(event.get("input")),
+        "output": redact_value(event.get("output")),
+        "error": redact_value(event.get("error")),
+        "confidence": event.get("confidence"),
+    }
+    append_log("observability", entry)
 
 
 def append_log(kind: str, entry: dict) -> None:
@@ -262,8 +313,9 @@ def summarize_result(result: dict) -> dict:
 
 
 def mark_case_done(case_id: str, result: dict) -> dict | None:
-    summary = summarize_result(result)
-    return update_case(case_id, status="done", result=summary, raw_result=result)
+    safe_result = redact_value(result)
+    summary = summarize_result(safe_result)
+    return update_case(case_id, status="done", result=summary, raw_result=safe_result)
 
 
 def mark_case_failed(case_id: str, message: str) -> dict | None:
@@ -271,9 +323,14 @@ def mark_case_failed(case_id: str, message: str) -> dict | None:
         case_id,
         status="failed",
         result={
-            "judgment": "证据不足",
+            "judgment": "璇佹嵁涓嶈冻",
             "score": 0,
-            "reasoning": message,
+            "reasoning": redact_value(message),
             "key_evidence": [],
         },
     )
+
+
+def get_storage_info() -> dict:
+    return storage_info()
+
