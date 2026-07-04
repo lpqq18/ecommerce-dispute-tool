@@ -5,6 +5,7 @@ const state = {
   currentCase: null,
   pollTimer: null,
   cases: [],
+  caseFilter: "all",
   casePagination: { limit: 20, offset: 0, total: 0, has_more: false },
   logPagination: { limit: 50, offset: 0, total: 0, has_more: false },
 };
@@ -27,6 +28,12 @@ function formatBytes(bytes) {
 function formatTime(timestamp) {
   if (!timestamp) return "-";
   return new Date(timestamp).toLocaleString("zh-CN", { hour12: false });
+}
+
+function formatShortDate(timestamp) {
+  if (!timestamp) return "-";
+  const date = new Date(timestamp);
+  return `${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
 function showToast(message) {
@@ -69,47 +76,12 @@ async function fetchJson(url, options = {}) {
 
 function segmentForFile(file) {
   const name = file.name.toLowerCase();
-  if (/chat|message|聊天|沟通|buyer/.test(name)) return "买家聊天";
+  if (/chat|message|buyer|聊天|对话/.test(name)) return "聊天记录";
   if (/logistics|tracking|express|carrier|物流|快递|签收/.test(name)) return "物流凭证";
-  if (/order|detail|payment|订单|交易|付款/.test(name)) return "订单状态";
-  if (/sku|spec|detail|商品|规格|实物|照片/.test(name)) return "商品规格";
-  if (/refund|return|after|complaint|差评|退款|退货|投诉|售后/.test(name)) return "售后记录";
+  if (/order|detail|payment|订单|交易|付款/.test(name)) return "订单详情";
+  if (/sku|spec|product|商品|规格|实物|照片/.test(name)) return "商品规格";
+  if (/refund|return|after|complaint|review|差评|退款|退货|投诉|售后/.test(name)) return "售后/差评";
   return "证据组件";
-}
-
-function renderFileRows() {
-  const body = $("#fileRows");
-  if (!state.files.length) {
-    body.innerHTML = '<tr class="empty-row"><td colspan="4">尚未选择证据组件。</td></tr>';
-    return;
-  }
-  body.innerHTML = state.files.map((file, index) => `
-    <tr>
-      <td class="file-name">${escapeHtml(file.name)}</td>
-      <td><span class="tag">${escapeHtml(segmentForFile(file))}</span></td>
-      <td>${formatBytes(file.size)}</td>
-      <td><button class="remove-row" type="button" data-remove="${index}">移除</button></td>
-    </tr>
-  `).join("");
-}
-
-function updateUploadState() {
-  $("#imageCount").textContent = `${state.files.length} / 5`;
-  $("#analyzeBtn").disabled = state.files.length < 1;
-  $("#formError").textContent = "";
-  renderFileRows();
-}
-
-function addFiles(fileList) {
-  const images = [...fileList].filter((file) => file.type.startsWith("image/"));
-  if (!images.length) {
-    $("#formError").textContent = "请上传 PNG、JPG 或 WebP 图片。";
-    return;
-  }
-  const room = Math.max(0, 5 - state.files.length);
-  state.files.push(...images.slice(0, room));
-  if (images.length > room) showToast("最多只能上传 5 张截图。");
-  updateUploadState();
 }
 
 function statusLabel(status) {
@@ -132,21 +104,99 @@ function statusTone(status) {
   }[status] || "";
 }
 
+function judgementLabel(value) {
+  return {
+    support_buyer: "不建议申诉",
+    support_seller: "建议申诉",
+    insufficient_evidence: "建议补证",
+  }[value] || value || "等待判断";
+}
+
+function appealTone(score) {
+  if (score >= 70) return "high";
+  if (score >= 50) return "medium";
+  return "low";
+}
+
+function actionBadge(score) {
+  if (score >= 70) return { text: "建议申诉", tone: "good" };
+  if (score >= 50) return { text: "建议补证", tone: "warn" };
+  return { text: "不建议申诉", tone: "bad" };
+}
+
+function listMarkup(items, emptyText) {
+  const values = (items || []).filter(Boolean);
+  if (!values.length) return `<p class="muted">${escapeHtml(emptyText)}</p>`;
+  return values.map((item) => `<p>${escapeHtml(item)}</p>`).join("");
+}
+
+function caseMatchesFilter(item) {
+  const result = item.raw_result || {};
+  const judgement = result.judgement_direction || "";
+  if (state.caseFilter === "active") return ["queued", "processing", "retrying"].includes(item.status);
+  if (state.caseFilter === "won") return item.status === "done" && (judgement === "support_seller" || item.result?.judgment === "支持申诉");
+  if (state.caseFilter === "rejected") return item.status === "failed" || judgement === "support_buyer" || judgement === "insufficient_evidence";
+  return true;
+}
+
+function filteredCases() {
+  const keyword = ($("#caseSearchInput")?.value || "").trim().toLowerCase();
+  return state.cases.filter((item) => {
+    const haystack = [
+      item.id,
+      item.status,
+      item.result?.judgment,
+      item.raw_result?.dispute_type,
+      ...(item.files || []).map((file) => file.name),
+    ].join(" ").toLowerCase();
+    return caseMatchesFilter(item) && (!keyword || haystack.includes(keyword));
+  });
+}
+
 function renderCaseList() {
   const list = $("#caseList");
-  if (!state.cases.length) {
-    list.innerHTML = '<p class="muted">暂无历史案件。</p>';
+  const cases = filteredCases();
+  if (!cases.length) {
+    list.innerHTML = `
+      <div class="case-empty">
+        <strong>暂无匹配案件</strong>
+        <p>上传聊天、订单或物流截图后，系统会自动创建可追踪 Case。</p>
+      </div>
+    `;
+    renderCasePager();
     return;
   }
-  list.innerHTML = state.cases.map((item) => `
-    <button class="case-item ${state.currentCase?.id === item.id ? "active" : ""}" type="button" data-case-id="${escapeHtml(item.id)}">
-      <span class="case-status ${escapeHtml(item.status)}">${escapeHtml(statusLabel(item.status))}</span>
-      <strong>${escapeHtml(item.id)}</strong>
-      <small>${formatTime(item.created_at)} · ${item.files?.length || 0} 张截图</small>
-      <p>${escapeHtml(item.result?.judgment || "等待分析结果")}</p>
-    </button>
-  `).join("");
+  list.innerHTML = cases.map((item) => {
+    const result = item.raw_result || {};
+    const winScore = Number(result.appeal_win_score || item.result?.score || 0);
+    const disputeType = result.dispute_type || "等待识别";
+    const platform = platformLabel(item.files || []);
+    return `
+      <button class="case-item ${state.currentCase?.id === item.id ? "active" : ""}" type="button" data-case-id="${escapeHtml(item.id)}">
+        <span class="case-row">
+          <em>${escapeHtml(platform)}</em>
+          <code>${escapeHtml(item.id)}</code>
+        </span>
+        <span class="case-row main">
+          <strong>${escapeHtml(disputeType)}</strong>
+          <b>${Number.isFinite(winScore) ? winScore : 0}%</b>
+        </span>
+        <span class="case-row">
+          <small>${formatShortDate(item.created_at)}</small>
+          <i class="case-status ${escapeHtml(item.status)}">${escapeHtml(statusLabel(item.status))}</i>
+        </span>
+      </button>
+    `;
+  }).join("");
   renderCasePager();
+}
+
+function platformLabel(files) {
+  const text = files.map((file) => file.name || "").join(" ").toLowerCase();
+  if (/pdd|拼多多/.test(text)) return "拼多多";
+  if (/taobao|tmall|淘宝|天猫/.test(text)) return "淘宝";
+  if (/douyin|抖音/.test(text)) return "抖音";
+  return "平台";
 }
 
 async function loadCases() {
@@ -158,11 +208,10 @@ async function loadCases() {
     const payload = await fetchJson(`/cases?${query.toString()}`);
     state.cases = payload.cases || [];
     state.casePagination = payload.pagination || state.casePagination;
-    renderCaseList();
   } catch (error) {
     state.cases = state.cases || [];
-    renderCaseList();
   }
+  renderCaseList();
 }
 
 function renderCasePager() {
@@ -171,6 +220,40 @@ function renderCasePager() {
   $("#casePageText").textContent = `${page} / ${totalPages}`;
   $("#casePrevBtn").disabled = state.casePagination.offset <= 0;
   $("#caseNextBtn").disabled = !state.casePagination.has_more;
+}
+
+function renderFileTags() {
+  const target = $("#fileTagFlow");
+  if (!state.files.length) {
+    target.innerHTML = '<p class="muted">尚未选择证据组件。</p>';
+    return;
+  }
+  target.innerHTML = state.files.map((file, index) => `
+    <span class="file-tag">
+      <b>${escapeHtml(segmentForFile(file))}</b>
+      ${escapeHtml(file.name)}
+      <button type="button" data-remove="${index}" aria-label="移除文件">x</button>
+    </span>
+  `).join("");
+}
+
+function updateUploadState() {
+  $("#imageCount").textContent = `${state.files.length} / 5`;
+  $("#analyzeBtn").disabled = state.files.length < 1;
+  $("#formError").textContent = "";
+  renderFileTags();
+}
+
+function addFiles(fileList) {
+  const images = [...fileList].filter((file) => file.type.startsWith("image/"));
+  if (!images.length) {
+    $("#formError").textContent = "请上传 PNG、JPG 或 WebP 图片。";
+    return;
+  }
+  const room = Math.max(0, 5 - state.files.length);
+  state.files.push(...images.slice(0, room));
+  if (images.length > room) showToast("最多只能上传 5 张截图。");
+  updateUploadState();
 }
 
 function renderCurrentCase(item) {
@@ -199,70 +282,55 @@ function renderCurrentCase(item) {
 function renderPipeline(item) {
   const traceSteps = item?.trace?.steps || [];
   const names = ["Case创建", "OCR解析", "证据抽取", "冲突分析", "最终判断"];
-  $("#pipelineSteps").innerHTML = names.map((name, index) => {
-    const done = name === "Case创建" ? !!item : traceSteps.some((step) => step.step === name && step.status === "success");
+  $("#pipelineSteps").innerHTML = names.map((name) => {
+    const done = name === "Case创建" ? !!item : traceSteps.some((step) => String(step.step || "").includes(name) && step.status === "success");
     const failed = item?.status === "failed" && traceSteps.some((step) => step.status === "failed");
     const active = ["queued", "processing", "retrying"].includes(item?.status) && !done && !failed;
     return `<div class="pipeline-step ${done ? "done" : ""} ${active ? "active" : ""} ${failed ? "failed" : ""}">
-      <span>${done ? "[✓]" : failed ? "[!]" : active ? "[→]" : "[ ]"}</span><p>${escapeHtml(done ? `${name}完成` : `等待${name}`)}</p>
+      <span>${done ? "[ok]" : failed ? "[!]" : active ? "[..]" : "[ ]"}</span><p>${escapeHtml(done ? `${name}完成` : `等待${name}`)}</p>
     </div>`;
   }).join("");
 }
 
-function riskTone(score) {
-  if (score >= 70) return ["高纠纷风险", "high"];
-  if (score >= 30) return ["中等纠纷风险", "medium"];
-  return ["低纠纷风险", "low"];
-}
-
-function appealTone(score) {
-  if (score >= 70) return "high";
-  if (score >= 40) return "medium";
-  return "low";
-}
-
-function judgementLabel(value) {
-  return {
-    support_buyer: "建议支持买家",
-    support_seller: "建议支持商家",
-    insufficient_evidence: "证据不足",
-  }[value] || value || "等待判断";
-}
-
-function listMarkup(items, emptyText) {
-  const values = (items || []).filter(Boolean);
-  if (!values.length) return `<p class="muted">${escapeHtml(emptyText)}</p>`;
-  return values.map((item) => `<p>${escapeHtml(item)}</p>`).join("");
+function setResultTab(tab) {
+  const reportActive = tab === "report";
+  $("#reportTabBtn").classList.toggle("active", reportActive);
+  $("#appealTabBtn").classList.toggle("active", !reportActive);
+  $("#reportTabPanel").classList.toggle("active", reportActive);
+  $("#appealTabPanel").classList.toggle("active", !reportActive);
 }
 
 function renderResult(result) {
+  const hasResult = Boolean(result);
+  $("#resultPanel").classList.toggle("is-disabled", !hasResult);
+  $("#resultPanel").setAttribute("aria-disabled", String(!hasResult));
+  $("#resultEmptyState").hidden = hasResult;
+
   if (!result) {
-    $("#riskScore").textContent = "0";
-    $("#appealWinScore").textContent = "0";
+    $("#appealWinScore").textContent = "--";
+    $("#scoreExplanation").textContent = "风险高不等于申诉胜率高。";
     $("#riskHeadline").textContent = "等待分析";
     $("#judgementText").textContent = "等待分析";
-    $("#judgementReason").textContent = "";
+    $("#actionBadge").className = "action-badge neutral";
+    $("#actionBadge").textContent = "等待上传";
     $("#summaryText").textContent = "-";
     $("#keyEvidenceList").innerHTML = '<p class="muted">暂无证据链摘要。</p>';
     $("#reasonList").innerHTML = '<p class="muted">暂无风险原因。</p>';
     $("#gapList").innerHTML = '<p class="muted">暂无证据缺口。</p>';
     $("#appealText").textContent = "系统生成的申诉文本将显示在这里。";
     renderStructuredEvidence(null);
+    setResultTab("report");
     return;
   }
-  const disputeRisk = Number(result.dispute_risk_score ?? result.risk_score ?? 0);
+
   const appealWin = Number(result.appeal_win_score ?? 0);
-  const [riskLabel, riskClass] = riskTone(disputeRisk);
-  $("#riskCard").className = `score-card ${riskClass}`;
-  $("#riskLevel").textContent = riskLabel;
-  $("#riskScore").textContent = disputeRisk;
-  $("#appealScoreCard").className = `score-card appeal ${appealTone(appealWin)}`;
-  $("#appealWinScore").textContent = appealWin;
+  const badge = actionBadge(appealWin);
+  $("#appealWinScore").textContent = `${appealWin}%`;
   $("#scoreExplanation").textContent = result.score_explanation || "风险高不等于申诉胜率高。";
   $("#riskHeadline").textContent = result.dispute_type || "纠纷风险评估";
-  $("#recommendation").textContent = result.recommendation || "暂无建议。";
   $("#judgementText").textContent = judgementLabel(result.judgement_direction);
-  $("#judgementReason").textContent = result.judgement_reason || "暂无判决方向说明。";
+  $("#actionBadge").className = `action-badge ${badge.tone}`;
+  $("#actionBadge").textContent = badge.text;
   $("#summaryText").textContent = result.dispute_summary || "未识别到足够证据形成纠纷总结。";
   $("#keyEvidenceList").innerHTML = listMarkup(result.evidence_order, "暂无证据链摘要。");
   $("#reasonList").innerHTML = listMarkup(result.risk_reasons, "未识别到直接风险原因。");
@@ -327,7 +395,7 @@ function renderTrace(item) {
   $("#traceFeed").innerHTML = steps.map((step) => `
     <article class="${escapeHtml(step.status)}">
       <time>${formatTime(step.timestamp)}</time>
-      <strong>${step.status === "success" ? "✔" : "!"} ${escapeHtml(step.step)}</strong>
+      <strong>${step.status === "success" ? "OK" : "!"} ${escapeHtml(step.step)}</strong>
       <p>${escapeHtml(step.output || "")}</p>
       <small>${Number(step.duration_ms || 0)} ms${step.confidence !== undefined ? ` · confidence ${Number(step.confidence)}%` : ""}</small>
     </article>
@@ -356,25 +424,21 @@ async function loadCaseLogs(caseId) {
     return [];
   }
   const headers = adminHeaders();
-  let user;
-  let system;
-  let ai;
-  let observability;
   try {
-    [user, system, ai, observability] = await Promise.all([
+    const [user, system, ai, observability] = await Promise.all([
       fetchJson(`/logs/user?case_id=${encodeURIComponent(caseId)}&limit=20`, { headers }),
       fetchJson(`/logs/system?case_id=${encodeURIComponent(caseId)}&limit=20`, { headers }),
       fetchJson(`/logs/ai?case_id=${encodeURIComponent(caseId)}&limit=20`, { headers }),
       fetchJson(`/logs/observability?case_id=${encodeURIComponent(caseId)}&limit=20`, { headers }),
     ]);
+    const logs = [...(user.logs || []), ...(system.logs || []), ...(ai.logs || []), ...(observability.logs || [])]
+      .sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0));
+    renderMiniLogs(logs);
+    return logs;
   } catch (error) {
     renderMiniLogs([]);
     return [];
   }
-  const logs = [...(user.logs || []), ...(system.logs || []), ...(ai.logs || []), ...(observability.logs || [])]
-    .sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0));
-  renderMiniLogs(logs);
-  return logs;
 }
 
 async function selectCase(caseId) {
@@ -406,7 +470,7 @@ function startPolling(caseId) {
   state.pollTimer = setInterval(async () => {
     try {
       await selectCase(caseId);
-      if (state.currentCase?.status !== "processing") {
+      if (!["queued", "processing", "retrying"].includes(state.currentCase?.status)) {
         clearInterval(state.pollTimer);
         await loadCases();
       }
@@ -582,7 +646,7 @@ async function copyAppeal() {
   const text = $("#appealText").textContent.trim();
   if (!text || text === "系统生成的申诉文本将显示在这里。") return;
   await navigator.clipboard.writeText(text);
-  showToast("申诉文本已复制。");
+  showToast("复制成功，可直接前往平台粘贴。");
 }
 
 function resetAll() {
@@ -620,6 +684,17 @@ function bindEvents() {
     if (state.currentCase) await selectCase(state.currentCase.id);
   });
   $("#reloadCasesBtn").addEventListener("click", loadCases);
+  $("#caseSearchInput").addEventListener("input", renderCaseList);
+  $("#caseStatusTabs").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-case-filter]");
+    if (!button) return;
+    state.caseFilter = button.dataset.caseFilter;
+    $("#caseStatusTabs").querySelectorAll("button").forEach((item) => item.classList.toggle("active", item === button));
+    renderCaseList();
+  });
+  document.querySelectorAll("[data-result-tab]").forEach((button) => {
+    button.addEventListener("click", () => setResultTab(button.dataset.resultTab));
+  });
   $("#casePrevBtn").addEventListener("click", async () => {
     state.casePagination.offset = Math.max(0, state.casePagination.offset - state.casePagination.limit);
     await loadCases();
@@ -652,7 +727,7 @@ function bindEvents() {
     const button = event.target.closest("[data-retry-case]");
     if (button) await retryCase(button.dataset.retryCase);
   });
-  $("#fileRows").addEventListener("click", (event) => {
+  $("#fileTagFlow").addEventListener("click", (event) => {
     const button = event.target.closest("[data-remove]");
     if (!button) return;
     state.files.splice(Number(button.dataset.remove), 1);
@@ -677,6 +752,8 @@ async function init() {
   renderCurrentCase(null);
   renderResult(null);
   renderOcrAudit(null);
+  renderTrace(null);
+  renderMiniLogs([]);
   await loadCases();
   if (location.pathname === "/admin/logs") await showLogs();
 }

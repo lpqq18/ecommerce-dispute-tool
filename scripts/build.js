@@ -25,7 +25,7 @@ for (const directory of directories) {
   fs.cpSync(source, path.join(dist, directory), { recursive: true });
 }
 
-const requiredAssets = ["/styles.css", "/app.js"];
+const requiredAssets = ["styles.css", "app.js"];
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 for (const asset of requiredAssets) {
   if (!html.includes(asset)) {

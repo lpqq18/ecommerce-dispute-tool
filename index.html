@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>电商纠纷证据包助手</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <header class="topbar">
@@ -21,11 +21,18 @@
       </div>
     </header>
 
-    <main class="case-shell" id="workspaceView">
+    <main class="workbench-container" id="workspaceView">
       <aside class="case-sidebar">
         <div class="sidebar-head">
           <p class="section-label">Case List</p>
           <button id="reloadCasesBtn" type="button">刷新</button>
+        </div>
+        <input class="case-search" id="caseSearchInput" type="search" placeholder="搜索订单号 / Case ID" />
+        <div class="case-tabs" id="caseStatusTabs">
+          <button class="active" type="button" data-case-filter="all">全部</button>
+          <button type="button" data-case-filter="active">进行中</button>
+          <button type="button" data-case-filter="won">已胜诉</button>
+          <button type="button" data-case-filter="rejected">已驳回</button>
         </div>
         <div class="case-list" id="caseList">
           <p class="muted">暂无历史案件。</p>
@@ -42,18 +49,25 @@
           <p class="section-label">证据接入</p>
           <h1>上传纠纷证据</h1>
           <p class="lead">每次上传都会自动创建 Case，系统会记录分析状态、AI Trace 与运行日志。</p>
+
           <label class="dropzone" id="dropzone">
             <input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp" multiple />
-            <span>↑</span>
+            <div class="evidence-slots">
+              <span>聊天记录 <b>必传</b></span>
+              <span>订单详情 <b>推荐</b></span>
+              <span>物流凭证 <b>推荐</b></span>
+              <span>售后/差评 <b>可选</b></span>
+            </div>
             <strong>拖拽文件至此处，或点击本地上传</strong>
-            <small>支持 PNG / JPG / WebP，最多 5 张</small>
+            <small>支持 PNG / JPG / WebP，最多 5 张；长图或多合一截图也可接收。</small>
           </label>
-          <div class="matrix-head"><span>已选证据组件</span><strong id="imageCount">0 / 5</strong></div>
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>文件名</th><th>单据属性</th><th>大小</th><th>操作</th></tr></thead>
-              <tbody id="fileRows"><tr class="empty-row"><td colspan="4">尚未选择证据组件。</td></tr></tbody>
-            </table>
+
+          <div class="upload-summary">
+            <span>已选证据组件</span>
+            <strong id="imageCount">0 / 5</strong>
+          </div>
+          <div class="file-tag-flow" id="fileTagFlow">
+            <p class="muted">尚未选择证据组件。</p>
           </div>
           <p class="form-error" id="formError"></p>
           <button class="primary-btn" id="analyzeBtn" type="button" disabled>创建 Case 并分析</button>
@@ -73,57 +87,87 @@
         </section>
       </section>
 
-      <aside class="case-inspector">
-        <section class="panel">
+      <aside class="case-inspector" id="caseInspector">
+        <div class="empty-inspector" id="resultEmptyState">
+          <strong>等待上传凭证...</strong>
+          <p>开启分析后，AI 将在此为您实时构建风险画像、证据缺口及申诉文本。</p>
+        </div>
+
+        <section class="panel result-panel" id="resultPanel" aria-disabled="true">
           <p class="section-label">AI 判断结果</p>
-          <div class="score-console">
-            <div class="score-card" id="riskCard"><span id="riskLevel">纠纷风险分</span><strong id="riskScore">0</strong><p id="recommendation">等待分析。</p></div>
-            <div class="score-card appeal" id="appealScoreCard"><span>申诉胜率分</span><strong id="appealWinScore">0</strong><p id="scoreExplanation">风险高不等于申诉胜率高。</p></div>
+          <div class="decision-hero">
+            <div>
+              <span>申诉胜率</span>
+              <strong id="appealWinScore">--</strong>
+              <p id="scoreExplanation">风险高不等于申诉胜率高。</p>
+            </div>
+            <div class="decision-side">
+              <span>纠纷类型</span>
+              <strong id="riskHeadline">等待分析</strong>
+              <em class="action-badge neutral" id="actionBadge">等待上传</em>
+              <small id="judgementText">等待分析</small>
+            </div>
           </div>
-          <div class="decision-grid">
-            <article><span>纠纷类型</span><strong id="riskHeadline">等待分析</strong></article>
-            <article><span>判断结论</span><strong id="judgementText">等待分析</strong><p id="judgementReason"></p></article>
+          <p class="legal-note">注：该得分基于平台规则及类似案例 AI 推演，仅供申诉参考，不代表平台最终判责。</p>
+
+          <div class="result-tabs" role="tablist">
+            <button class="active" id="reportTabBtn" type="button" data-result-tab="report">诊断报告</button>
+            <button id="appealTabBtn" type="button" data-result-tab="appeal">申诉材料</button>
+          </div>
+
+          <div class="tab-panel active" id="reportTabPanel">
+            <div class="report-grid">
+              <article>
+                <h3>核心冲突 / 风险原因</h3>
+                <div class="finding-list" id="reasonList"></div>
+              </article>
+              <article>
+                <h3>证据缺口</h3>
+                <div class="finding-list" id="gapList"></div>
+              </article>
+              <article>
+                <h3>纠纷总结</h3>
+                <p id="summaryText">-</p>
+              </article>
+              <article>
+                <h3>证据链摘要</h3>
+                <div class="finding-list" id="keyEvidenceList"></div>
+              </article>
+            </div>
+          </div>
+
+          <div class="tab-panel" id="appealTabPanel">
+            <div class="doc-head">
+              <p class="section-label">平台申诉文本</p>
+              <button id="copyAppealBtn" type="button">一键复制文本</button>
+            </div>
+            <pre id="appealText">系统生成的申诉文本将显示在这里。</pre>
           </div>
         </section>
 
-        <section class="panel">
-          <p class="section-label">证据摘要</p>
-          <div class="summary-grid">
-            <article><h3>纠纷总结</h3><p id="summaryText">-</p></article>
-            <article><h3>证据链摘要</h3><div class="finding-list" id="keyEvidenceList"></div></article>
-            <article><h3>风险原因</h3><div class="finding-list" id="reasonList"></div></article>
-            <article><h3>证据缺口</h3><div class="finding-list" id="gapList"></div></article>
-          </div>
-        </section>
-
-        <section class="panel">
-          <p class="section-label">结构化证据</p>
-          <div class="structured-grid" id="structuredEvidence">
-            <p class="muted">等待证据结构化。</p>
-          </div>
-        </section>
-
-        <section class="panel">
-          <div class="doc-head"><p class="section-label">平台申诉文本</p><button id="copyAppealBtn" type="button">复制文本</button></div>
-          <pre id="appealText">系统生成的申诉文本将显示在这里。</pre>
-        </section>
-
-        <section class="panel">
-          <p class="section-label">OCR 原始结果</p>
-          <div class="ocr-audit" id="ocrAudit">
-            <p class="muted">等待 OCR 解析。</p>
-          </div>
-        </section>
-
-        <section class="panel">
-          <p class="section-label">AI分析过程</p>
-          <div class="trace-feed" id="traceFeed"></div>
-        </section>
-
-        <section class="panel">
-          <p class="section-label">Case Logs</p>
-          <div class="mini-log-feed" id="caseLogFeed"></div>
-        </section>
+        <details class="advanced-panel" id="advancedPanel">
+          <summary>查看底层 AI 审计链路与 Trace 日志（高级）</summary>
+          <section>
+            <p class="section-label">结构化证据</p>
+            <div class="structured-grid" id="structuredEvidence">
+              <p class="muted">等待证据结构化。</p>
+            </div>
+          </section>
+          <section>
+            <p class="section-label">OCR 原始结果</p>
+            <div class="ocr-audit" id="ocrAudit">
+              <p class="muted">等待 OCR 解析。</p>
+            </div>
+          </section>
+          <section>
+            <p class="section-label">AI 分析过程</p>
+            <div class="trace-feed" id="traceFeed"></div>
+          </section>
+          <section>
+            <p class="section-label">Case Logs</p>
+            <div class="mini-log-feed" id="caseLogFeed"></div>
+          </section>
+        </details>
       </aside>
     </main>
 
@@ -140,7 +184,7 @@
             <option value="all">全部日志</option>
             <option value="user">用户行为</option>
             <option value="system">系统运行</option>
-            <option value="ai">AI推理</option>
+            <option value="ai">AI 推理</option>
             <option value="observability">观测事件</option>
           </select>
           <input id="adminTokenInput" type="password" placeholder="Admin Token（可选）" />
@@ -161,6 +205,6 @@
     </main>
 
     <div class="toast" id="toast" hidden></div>
-    <script src="/app.js?v=1.2"></script>
+    <script src="app.js?v=1.3"></script>
   </body>
 </html>
