@@ -10,6 +10,16 @@ const state = {
   logPagination: { limit: 50, offset: 0, total: 0, has_more: false },
 };
 
+const ROUTE_PREFIXES = new Set(["", "admin", "api", "case", "cases", "logs"]);
+const firstPathSegment = location.pathname.split("/").filter(Boolean)[0] || "";
+const APP_BASE_PATH = window.APP_BASE_PATH || (ROUTE_PREFIXES.has(firstPathSegment) ? "" : `/${firstPathSegment}`);
+
+function appUrl(path) {
+  if (!APP_BASE_PATH) return path;
+  if (path === "/") return `${APP_BASE_PATH}/`;
+  return `${APP_BASE_PATH}${path}`;
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -52,7 +62,7 @@ function setStatus(text, tone = "") {
 async function fetchJson(url, options = {}) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open(options.method || "GET", url);
+    xhr.open(options.method || "GET", appUrl(url));
     xhr.responseType = "text";
     Object.entries(options.headers || {}).forEach(([key, value]) => xhr.setRequestHeader(key, value));
     xhr.onload = () => {
@@ -662,7 +672,7 @@ function showWorkspace() {
   $("#logsView").hidden = true;
   $("#workspaceNav").classList.add("active");
   $("#logsNav").classList.remove("active");
-  history.replaceState(null, "", "/");
+  history.replaceState(null, "", appUrl("/"));
 }
 
 async function showLogs() {
@@ -670,7 +680,7 @@ async function showLogs() {
   $("#logsView").hidden = false;
   $("#workspaceNav").classList.remove("active");
   $("#logsNav").classList.add("active");
-  history.replaceState(null, "", "/admin/logs");
+  history.replaceState(null, "", appUrl("/admin/logs"));
   await loadAdminLogs();
 }
 
@@ -755,7 +765,7 @@ async function init() {
   renderTrace(null);
   renderMiniLogs([]);
   await loadCases();
-  if (location.pathname === "/admin/logs") await showLogs();
+  if (location.pathname === appUrl("/admin/logs")) await showLogs();
 }
 
 init().catch((error) => showToast(error.message));
