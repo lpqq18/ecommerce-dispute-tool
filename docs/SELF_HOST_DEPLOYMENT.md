@@ -30,7 +30,7 @@ sudo npm install -g pm2
 ## 3. 拉取项目
 
 ```bash
-cd /www/wwwroot
+cd /var/www
 git clone https://github.com/lpqq18/ecommerce-dispute-tool.git
 cd ecommerce-dispute-tool
 ```
@@ -38,7 +38,7 @@ cd ecommerce-dispute-tool
 如果目录已存在：
 
 ```bash
-cd /www/wwwroot/ecommerce-dispute-tool
+cd /var/www/ecommerce-dispute-tool
 git pull origin main
 ```
 
@@ -97,15 +97,16 @@ server {
         return 301 /ecommerce-dispute-tool/;
     }
 
-    location /ecommerce-dispute-tool/ {
+    location ^~ /ecommerce-dispute-tool/ {
         proxy_pass http://127.0.0.1:4173/;
         proxy_http_version 1.1;
+        proxy_set_header Connection "";
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
+        proxy_set_header X-Forwarded-Prefix /ecommerce-dispute-tool;
+        proxy_read_timeout 300s;
         client_max_body_size 30m;
     }
 }
@@ -151,7 +152,7 @@ https://top.tejarvis.info/ecommerce-dispute-tool/admin/logs
 ## 9. 后续更新
 
 ```bash
-cd /www/wwwroot/ecommerce-dispute-tool
+cd /var/www/ecommerce-dispute-tool
 git pull origin main
 source .venv/bin/activate
 pip install -r requirements.txt
