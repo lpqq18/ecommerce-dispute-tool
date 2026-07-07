@@ -40,6 +40,10 @@ except ImportError:
 HOST = os.getenv("HOST", "127.0.0.1")
 PORT = int(os.getenv("PORT", "4173"))
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+AI_PROVIDER = os.getenv("AI_PROVIDER", "auto").strip().lower()
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com").rstrip("/")
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 MAX_IMAGES = 5
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
@@ -477,6 +481,109 @@ def analyze_images(images, ocr_result=None):
     return normalize_result_scores(extract_json(extract_output_text(response.json())))
 
 
+def resolve_ai_provider(ocr_result=None):
+    provider = AI_PROVIDER if AI_PROVIDER in ("openai", "deepseek") else "auto"
+    has_ocr_text = bool(ocr_result and (ocr_result.get("text") or "").strip())
+    if provider == "deepseek":
+        return "deepseek" if DEEPSEEK_API_KEY and has_ocr_text else ""
+    if provider == "openai":
+        return "openai" if os.getenv("OPENAI_API_KEY") else ""
+    if DEEPSEEK_API_KEY and has_ocr_text:
+        return "deepseek"
+    if os.getenv("OPENAI_API_KEY"):
+        return "openai"
+    return ""
+
+
+def call_openai(images, ocr_result=None):
+    api_key = os.getenv("OPENAI_API_KEY")
+    content = [{"type": "input_text", "text": build_prompt(ocr_result)}]
+    for image in images:
+        data_url = f"data:{image['mime']};base64,{base64.b64encode(image['bytes']).decode('ascii')}"
+        content.append({"type": "input_image", "image_url": data_url})
+
+    body = {
+        "model": OPENAI_MODEL,
+        "input": [{"role": "user", "content": content}],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "dispute_evidence_pack",
+                "schema": response_schema(),
+                "strict": True,
+            }
+        },
+    }
+    response = requests.post(
+        "https://api.openai.com/v1/responses",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json=body,
+        timeout=90,
+    )
+    if response.status_code >= 400:
+        try:
+            detail = response.json()
+        except Exception:
+            detail = response.text
+        raise RuntimeError(f"OpenAI analysis failed: {detail}")
+    return normalize_result_scores(extract_json(extract_output_text(response.json())))
+
+
+def call_deepseek(ocr_result=None):
+    text = (ocr_result or {}).get("text", "").strip()
+    if not text:
+        raise RuntimeError("DeepSeek text reasoning requires OCR text first.")
+
+    system_prompt = (
+        "你是电商纠纷证据推理分析员。只能基于 OCR 文本进行判断，"
+        "不要编造截图中不存在的订单号、物流号、姓名、时间或平台结论。"
+        "必须只返回一个 JSON object，不要返回 Markdown。"
+    )
+    user_prompt = (
+        build_prompt(ocr_result)
+        + "\n\n请严格返回符合以下 JSON Schema 语义的 JSON object。"
+        + "字段必须完整，缺失证据请写入 evidence_gaps 和 evidence_completeness.missing_items。\n"
+        + json_dumps(response_schema())
+    )
+    body = {
+        "model": DEEPSEEK_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0.1,
+    }
+    response = requests.post(
+        f"{DEEPSEEK_API_BASE}/chat/completions",
+        headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+        json=body,
+        timeout=90,
+    )
+    if response.status_code >= 400:
+        try:
+            detail = response.json()
+        except Exception:
+            detail = response.text
+        raise RuntimeError(f"DeepSeek analysis failed: {detail}")
+    payload = response.json()
+    text = payload.get("choices", [{}])[0].get("message", {}).get("content", "")
+    return normalize_result_scores(extract_json(text))
+
+
+def analyze_images(images, ocr_result=None):
+    provider = resolve_ai_provider(ocr_result)
+    if not provider:
+        if ocr_result and ocr_result.get("real_ocr") and ocr_result.get("text"):
+            return normalize_result_scores(build_rule_based_result(images, ocr_result))
+        return normalize_result_scores(demo_result(images, ocr_result))
+    if requests is None:
+        raise RuntimeError("Current Python environment is missing requests, so AI API calls cannot run.")
+    if provider == "deepseek":
+        return call_deepseek(ocr_result)
+    return call_openai(images, ocr_result)
+
+
 def build_analysis_nodes(case_id):
     def ocr_node(state):
         ocr_result = run_ocr(state["images"])
@@ -566,8 +673,12 @@ def runtime_config() -> dict:
             "min_text_chars": OCR_MIN_TEXT_CHARS,
         },
         "ai": {
+            "provider": AI_PROVIDER,
+            "active_provider": "deepseek_when_ocr_text_available" if DEEPSEEK_API_KEY else ("openai" if os.getenv("OPENAI_API_KEY") else "demo_or_rules"),
             "openai_configured": bool(os.getenv("OPENAI_API_KEY")),
-            "model": OPENAI_MODEL,
+            "openai_model": OPENAI_MODEL,
+            "deepseek_configured": bool(DEEPSEEK_API_KEY),
+            "deepseek_model": DEEPSEEK_MODEL,
         },
         "privacy": {
             "redaction_enabled": REDACTION_ENABLED,
