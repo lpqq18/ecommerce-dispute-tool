@@ -15,11 +15,15 @@ except ImportError:  # pragma: no cover - handled at runtime
 OCR_PROVIDER = os.getenv("OCR_PROVIDER", "auto").strip().lower()
 OCR_API_URL = os.getenv("OCR_API_URL", "").strip()
 OCR_API_TOKEN = os.getenv("OCR_API_TOKEN", "").strip()
+BAIDU_OCR_API_KEY = os.getenv("BAIDU_OCR_API_KEY", "").strip()
+BAIDU_OCR_SECRET_KEY = os.getenv("BAIDU_OCR_SECRET_KEY", "").strip()
+BAIDU_OCR_ENDPOINT = os.getenv("BAIDU_OCR_ENDPOINT", "https://aip.baidubce.com/rest/2.0/ocr/v1/accurate_basic").strip()
 OCR_TIMEOUT_SECONDS = int(os.getenv("OCR_TIMEOUT_SECONDS", "60"))
 OCR_REQUIRE_REAL = os.getenv("OCR_REQUIRE_REAL", "0").strip() == "1"
 OCR_MIN_TEXT_CHARS = int(os.getenv("OCR_MIN_TEXT_CHARS", "0"))
 
 _PADDLE_ENGINE = None
+_BAIDU_TOKEN = {"value": "", "expires_at": 0}
 
 
 def run_ocr(images: list[dict]) -> dict:
@@ -30,12 +34,14 @@ def run_ocr(images: list[dict]) -> dict:
     try:
         if provider == "external":
             result = run_external_ocr(images)
+        elif provider == "baidu":
+            result = run_baidu_ocr(images)
         elif provider == "paddle":
             result = run_paddle_ocr(images)
         else:
             result = run_demo_ocr(images, "未配置 OCR_API_URL，且未启用本地 PaddleOCR。")
     except Exception as exc:
-        if OCR_PROVIDER in ("external", "paddle"):
+        if OCR_PROVIDER in ("external", "baidu", "paddle"):
             raise RuntimeError(f"OCR 解析失败：{exc}") from exc
         warnings.append(f"OCR 自动模式未能启用真实识别：{exc}")
         result = run_demo_ocr(images, warnings[-1])
@@ -50,8 +56,10 @@ def run_ocr(images: list[dict]) -> dict:
 
 
 def resolve_provider() -> str:
-    if OCR_PROVIDER in ("external", "paddle", "demo"):
+    if OCR_PROVIDER in ("external", "baidu", "paddle", "demo"):
         return OCR_PROVIDER
+    if BAIDU_OCR_API_KEY and BAIDU_OCR_SECRET_KEY:
+        return "baidu"
     if OCR_API_URL:
         return "external"
     return "demo"
@@ -89,6 +97,83 @@ def run_external_ocr(images: list[dict]) -> dict:
         files.clear()
 
     return normalize_ocr_payload(payload, provider="external")
+
+
+def get_baidu_access_token() -> str:
+    if not BAIDU_OCR_API_KEY or not BAIDU_OCR_SECRET_KEY:
+        raise RuntimeError("未配置 BAIDU_OCR_API_KEY 或 BAIDU_OCR_SECRET_KEY。")
+    if _BAIDU_TOKEN["value"] and time.time() < _BAIDU_TOKEN["expires_at"] - 300:
+        return _BAIDU_TOKEN["value"]
+    response = requests.post(
+        "https://aip.baidubce.com/oauth/2.0/token",
+        params={
+            "grant_type": "client_credentials",
+            "client_id": BAIDU_OCR_API_KEY,
+            "client_secret": BAIDU_OCR_SECRET_KEY,
+        },
+        timeout=OCR_TIMEOUT_SECONDS,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f"百度 OCR token 获取失败 {response.status_code}: {response.text[:500]}")
+    payload = response.json()
+    token = payload.get("access_token")
+    if not token:
+        raise RuntimeError(f"百度 OCR token 响应缺少 access_token: {payload}")
+    _BAIDU_TOKEN["value"] = token
+    _BAIDU_TOKEN["expires_at"] = time.time() + int(payload.get("expires_in") or 2592000)
+    return token
+
+
+def run_baidu_ocr(images: list[dict]) -> dict:
+    if requests is None:
+        raise RuntimeError("当前 Python 环境缺少 requests，无法调用百度 OCR 服务。")
+
+    token = get_baidu_access_token()
+    normalized_images = []
+    warnings = []
+    for index, image in enumerate(images):
+        filename = image.get("filename") or f"image-{index + 1}.jpg"
+        response = requests.post(
+            BAIDU_OCR_ENDPOINT,
+            params={"access_token": token},
+            data={
+                "image": base64.b64encode(image.get("bytes") or b"").decode("ascii"),
+                "language_type": "CHN_ENG",
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=OCR_TIMEOUT_SECONDS,
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(f"百度 OCR 服务返回 {response.status_code}: {response.text[:500]}")
+        payload = response.json()
+        if payload.get("error_code"):
+            raise RuntimeError(f"百度 OCR 服务错误 {payload.get('error_code')}: {payload.get('error_msg')}")
+        words = payload.get("words_result") or []
+        blocks = []
+        for item in words:
+            probability = item.get("probability") if isinstance(item, dict) else None
+            blocks.append(
+                normalize_block(
+                    {
+                        "text": item.get("words") or "",
+                        "confidence": probability.get("average") if isinstance(probability, dict) else None,
+                        "bbox": item.get("location") or [],
+                    }
+                )
+            )
+        if not blocks:
+            warnings.append(f"{filename} 未识别到文本。")
+        normalized_images.append(
+            {
+                "filename": filename,
+                "mime": image.get("mime") or "",
+                "blocks": blocks,
+                "block_count": len(blocks),
+                "text": "\n".join(block["text"] for block in blocks if block.get("text")),
+            }
+        )
+
+    return {"provider": "baidu", "real_ocr": True, "images": normalized_images, "warnings": warnings}
 
 
 def run_paddle_ocr(images: list[dict]) -> dict:
