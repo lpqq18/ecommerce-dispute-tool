@@ -23,6 +23,7 @@ OCR_REQUIRE_REAL = os.getenv("OCR_REQUIRE_REAL", "0").strip() == "1"
 OCR_MIN_TEXT_CHARS = int(os.getenv("OCR_MIN_TEXT_CHARS", "0"))
 
 _PADDLE_ENGINE = None
+_RAPID_ENGINE = None
 _BAIDU_TOKEN = {"value": "", "expires_at": 0}
 
 
@@ -36,12 +37,14 @@ def run_ocr(images: list[dict]) -> dict:
             result = run_external_ocr(images)
         elif provider == "baidu":
             result = run_baidu_ocr(images)
+        elif provider == "rapidocr":
+            result = run_rapidocr(images)
         elif provider == "paddle":
             result = run_paddle_ocr(images)
         else:
             result = run_demo_ocr(images, "未配置 OCR_API_URL，且未启用本地 PaddleOCR。")
     except Exception as exc:
-        if OCR_PROVIDER in ("external", "baidu", "paddle"):
+        if OCR_PROVIDER in ("external", "baidu", "rapidocr", "paddle"):
             raise RuntimeError(f"OCR 解析失败：{exc}") from exc
         warnings.append(f"OCR 自动模式未能启用真实识别：{exc}")
         result = run_demo_ocr(images, warnings[-1])
@@ -56,7 +59,7 @@ def run_ocr(images: list[dict]) -> dict:
 
 
 def resolve_provider() -> str:
-    if OCR_PROVIDER in ("external", "baidu", "paddle", "demo"):
+    if OCR_PROVIDER in ("external", "baidu", "rapidocr", "paddle", "demo"):
         return OCR_PROVIDER
     if BAIDU_OCR_API_KEY and BAIDU_OCR_SECRET_KEY:
         return "baidu"
@@ -97,6 +100,54 @@ def run_external_ocr(images: list[dict]) -> dict:
         files.clear()
 
     return normalize_ocr_payload(payload, provider="external")
+
+
+def run_rapidocr(images: list[dict]) -> dict:
+    global _RAPID_ENGINE
+    try:
+        from rapidocr import RapidOCR
+    except ImportError as exc:
+        raise RuntimeError("未安装 rapidocr。请先安装 rapidocr onnxruntime，或改用 OCR_API_URL 外部服务。") from exc
+
+    if _RAPID_ENGINE is None:
+        _RAPID_ENGINE = RapidOCR()
+
+    normalized_images = []
+    for index, image in enumerate(images):
+        suffix = suffix_for_mime(image.get("mime"))
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+                temp_file.write(image.get("bytes") or b"")
+                temp_path = temp_file.name
+            raw_result = _RAPID_ENGINE(temp_path)
+            blocks = normalize_rapidocr_blocks(raw_result)
+            normalized_images.append(
+                {
+                    "filename": image.get("filename") or f"image-{index + 1}{suffix}",
+                    "mime": image.get("mime") or "",
+                    "blocks": blocks,
+                    "block_count": len(blocks),
+                    "text": "\n".join(block["text"] for block in blocks if block.get("text")),
+                }
+            )
+        finally:
+            if temp_path:
+                Path(temp_path).unlink(missing_ok=True)
+
+    return {"provider": "rapidocr", "real_ocr": True, "images": normalized_images, "warnings": []}
+
+
+def normalize_rapidocr_blocks(raw_result) -> list[dict]:
+    boxes = getattr(raw_result, "boxes", None) or []
+    texts = getattr(raw_result, "txts", None) or []
+    scores = getattr(raw_result, "scores", None) or []
+    blocks = []
+    for index, text in enumerate(texts):
+        bbox = boxes[index].tolist() if index < len(boxes) and hasattr(boxes[index], "tolist") else (boxes[index] if index < len(boxes) else [])
+        score = scores[index] if index < len(scores) else None
+        blocks.append(normalize_block({"text": text, "confidence": score, "bbox": bbox}))
+    return blocks
 
 
 def get_baidu_access_token() -> str:

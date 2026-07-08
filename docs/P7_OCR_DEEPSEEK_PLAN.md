@@ -16,9 +16,7 @@ DEEPSEEK_API_KEY=replace_with_key
 DEEPSEEK_MODEL=deepseek-chat
 DEEPSEEK_API_BASE=https://api.deepseek.com
 
-OCR_PROVIDER=baidu
-BAIDU_OCR_API_KEY=replace_with_baidu_ocr_api_key
-BAIDU_OCR_SECRET_KEY=replace_with_baidu_ocr_secret_key
+OCR_PROVIDER=rapidocr
 OCR_REQUIRE_REAL=1
 OCR_MIN_TEXT_CHARS=20
 ```
@@ -28,12 +26,12 @@ OCR_MIN_TEXT_CHARS=20
 - `AI_PROVIDER=auto`：优先使用 DeepSeek，但前提是已配置 `DEEPSEEK_API_KEY` 且 OCR 已提取到文本；否则有 OpenAI key 时使用 OpenAI；都没有时使用演示/规则兜底。
 - `AI_PROVIDER=deepseek`：强制使用 DeepSeek；如果没有 OCR 文本，不会让 DeepSeek 编造结果。
 - `AI_PROVIDER=openai`：强制使用 OpenAI Vision / Responses API。
-- OCR 可先接百度 OCR，后续再替换为 PaddleOCR 服务或通用外部 OCR API。
+- 免费 OCR 可先接 RapidOCR，后续如需更强识别率再替换为百度 OCR、PaddleOCR 服务或通用外部 OCR API。
 
 ## 验证项
 
 1. `/api/runtime` 中 `ai.deepseek_configured=true`。
-2. `/api/runtime` 中 `ocr.baidu_configured=true`。
+2. `/api/runtime` 中 `ocr.provider=rapidocr`。
 3. 上传真实截图后，OCR 审计区显示 `真实 OCR`。
 4. AI Trace 中最终判断由 DeepSeek 输出。
 5. 申诉文本不出现截图中不存在的订单号、物流号或时间。

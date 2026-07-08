@@ -670,6 +670,7 @@ def runtime_config() -> dict:
             "provider": OCR_PROVIDER,
             "external_configured": bool(OCR_API_URL),
             "baidu_configured": bool(BAIDU_OCR_API_KEY and BAIDU_OCR_SECRET_KEY),
+            "rapidocr_supported": True,
             "require_real": OCR_REQUIRE_REAL,
             "min_text_chars": OCR_MIN_TEXT_CHARS,
         },
