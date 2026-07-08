@@ -12,7 +12,7 @@ SENSITIVE_PATTERNS = [
     ("phone", re.compile(r"(?<!\d)(?:\+?86[-\s]?)?1[3-9]\d{9}(?!\d)")),
     ("id_card", re.compile(r"(?<![0-9A-Za-z])\d{17}[\dXx](?![0-9A-Za-z])")),
     ("email", re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")),
-    ("tracking_number", re.compile(r"(?<![A-Za-z0-9])(?:YT|SF|JD|STO|YTO|ZTO|EMS|HTKY|DBL|JT|JNT)?[A-Za-z0-9]{10,24}(?![A-Za-z0-9])")),
+    ("tracking_number", re.compile(r"(?<![A-Za-z0-9])(?=[A-Za-z0-9]{10,24}(?![A-Za-z0-9]))(?=[A-Za-z0-9]*\d)(?:YT|SF|JD|STO|YTO|ZTO|EMS|HTKY|DBL|JT|JNT)?[A-Za-z0-9]{10,24}(?![A-Za-z0-9])")),
     ("order_id", re.compile(r"(?i)(订单号|订单编号|order[_\s-]?id|order\s*no\.?)\s*[:：#]?\s*[A-Za-z0-9-]{6,32}")),
     ("address", re.compile(r"[\u4e00-\u9fa5]{2,}(?:省|市|区|县|镇|乡|街道|路|巷|弄|号楼|单元|室)[\u4e00-\u9fa50-9A-Za-z\-#（）()]{2,80}")),
 ]
