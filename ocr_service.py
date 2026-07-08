@@ -139,9 +139,12 @@ def run_rapidocr(images: list[dict]) -> dict:
 
 
 def normalize_rapidocr_blocks(raw_result) -> list[dict]:
-    boxes = getattr(raw_result, "boxes", None) or []
-    texts = getattr(raw_result, "txts", None) or []
-    scores = getattr(raw_result, "scores", None) or []
+    boxes = getattr(raw_result, "boxes", None)
+    texts = getattr(raw_result, "txts", None)
+    scores = getattr(raw_result, "scores", None)
+    boxes = [] if boxes is None else boxes
+    texts = [] if texts is None else texts
+    scores = [] if scores is None else scores
     blocks = []
     for index, text in enumerate(texts):
         bbox = boxes[index].tolist() if index < len(boxes) and hasattr(boxes[index], "tolist") else (boxes[index] if index < len(boxes) else [])
