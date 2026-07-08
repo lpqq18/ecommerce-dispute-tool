@@ -482,7 +482,9 @@ def analyze_images(images, ocr_result=None):
 
 
 def resolve_ai_provider(ocr_result=None):
-    provider = AI_PROVIDER if AI_PROVIDER in ("openai", "deepseek") else "auto"
+    provider = AI_PROVIDER if AI_PROVIDER in ("openai", "deepseek", "rules") else "auto"
+    if provider == "rules":
+        return ""
     has_ocr_text = bool(ocr_result and (ocr_result.get("text") or "").strip())
     if provider == "deepseek":
         return "deepseek" if DEEPSEEK_API_KEY and has_ocr_text else ""
@@ -676,7 +678,7 @@ def runtime_config() -> dict:
         },
         "ai": {
             "provider": AI_PROVIDER,
-            "active_provider": "deepseek_when_ocr_text_available" if DEEPSEEK_API_KEY else ("openai" if os.getenv("OPENAI_API_KEY") else "demo_or_rules"),
+            "active_provider": "rules" if AI_PROVIDER == "rules" else ("deepseek_when_ocr_text_available" if DEEPSEEK_API_KEY else ("openai" if os.getenv("OPENAI_API_KEY") else "demo_or_rules")),
             "openai_configured": bool(os.getenv("OPENAI_API_KEY")),
             "openai_model": OPENAI_MODEL,
             "deepseek_configured": bool(DEEPSEEK_API_KEY),

@@ -61,10 +61,7 @@ ADMIN_TOKEN=change-this-admin-token
 如需真实 AI / OCR，再补充：
 
 ```text
-AI_PROVIDER=deepseek
-DEEPSEEK_API_KEY=你的 DeepSeek Key
-DEEPSEEK_MODEL=deepseek-chat
-OPENAI_API_KEY=你的 OpenAI Key
+AI_PROVIDER=rules
 OCR_PROVIDER=rapidocr
 OCR_REQUIRE_REAL=1
 OCR_MIN_TEXT_CHARS=20
