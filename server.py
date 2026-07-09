@@ -343,6 +343,7 @@ def clamp_score(value, fallback=0):
 
 def normalize_result_scores(result):
     completeness = result.get("evidence_completeness") or {}
+    structured = result.get("structured_evidence") or {}
     missing_items = completeness.get("missing_items") or []
     missing_text = " ".join(str(item) for item in missing_items)
     present_flags = {
@@ -376,6 +377,15 @@ def normalize_result_scores(result):
     if not present_flags["订单证据"]:
         caps.append(60)
         cap_reasons.append("缺少订单证据")
+    if "未明确识别" in str(structured.get("order_status") or ""):
+        caps.append(82)
+        cap_reasons.append("订单状态未明确识别")
+    if not present_flags["物流证据"]:
+        caps.append(86 if dispute_type in ("退款争议", "恶意差评", "货不对板") else 60)
+        cap_reasons.append("物流证据未明确识别")
+    if "未明确识别" in str(structured.get("logistics_status") or "") and dispute_type in ("退款争议", "未收到货纠纷", "物流异常"):
+        caps.append(82)
+        cap_reasons.append("物流状态未明确识别")
     if dispute_type == "物流异常" and missing_any("订单号", "订单编号", "order_id"):
         caps.append(48)
         cap_reasons.append("物流异常案件缺少订单号")

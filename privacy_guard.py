@@ -14,7 +14,7 @@ SENSITIVE_PATTERNS = [
     ("email", re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")),
     ("tracking_number", re.compile(r"(?<![A-Za-z0-9])(?=[A-Za-z0-9]{10,24}(?![A-Za-z0-9]))(?=[A-Za-z0-9]*\d)(?:YT|SF|JD|STO|YTO|ZTO|EMS|HTKY|DBL|JT|JNT)?[A-Za-z0-9]{10,24}(?![A-Za-z0-9])")),
     ("order_id", re.compile(r"(?i)(订单号|订单编号|order[_\s-]?id|order\s*no\.?)\s*[:：#]?\s*[A-Za-z0-9-]{6,32}")),
-    ("address", re.compile(r"[\u4e00-\u9fa5]{2,}(?:省|市|区|县|镇|乡|街道|路|巷|弄|号楼|单元|室)[\u4e00-\u9fa50-9A-Za-z\-#（）()]{2,80}")),
+    ("address", re.compile(r"(?:[\u4e00-\u9fa5]{2,}(?:省|市|区|县|镇|乡|街道)[\u4e00-\u9fa50-9A-Za-z\-#（）()]{2,80}|[\u4e00-\u9fa5]{2,}(?:路|巷|弄|号楼|单元|室)[\u4e00-\u9fa50-9A-Za-z\-#（）()]{0,20}\d[\u4e00-\u9fa50-9A-Za-z\-#（）()]{0,60})")),
 ]
 
 TOKEN_MAP = {
