@@ -439,8 +439,16 @@ def normalize_result_scores(result):
     result["appeal_win_score"] = adjusted_appeal
 
     if adjusted_appeal < appeal_win:
+        explanation = result.get("score_explanation") or ""
+        result["score_explanation"] = re.sub(r"申诉胜率分\s*\d+", f"申诉胜率分 {adjusted_appeal}", explanation).strip()
+        judgement = result.get("judgement_direction")
+        if judgement == "support_seller":
+            result["judgement_reason"] = f"当前证据较支持商家申诉，申诉胜率 {adjusted_appeal}，但仍需优先补齐评分护栏提示的关键证据。"
+        elif judgement == "support_buyer":
+            result["judgement_reason"] = f"当前证据更支持买家方向，商家申诉胜率 {adjusted_appeal}，建议先补证后再判断。"
+        else:
+            result["judgement_reason"] = f"当前证据尚不足以形成稳定结论，申诉胜率 {adjusted_appeal}，建议补齐关键证据后再提交。"
         note = "评分护栏：因" + "、".join(cap_reasons[:3]) + f"，申诉胜率由 {appeal_win} 下调至 {adjusted_appeal}。"
-        result["score_explanation"] = (result.get("score_explanation") or "").strip()
         result["score_explanation"] = (result["score_explanation"] + "\n" + note).strip()
         gaps = result.setdefault("evidence_gaps", [])
         if missing_items:
