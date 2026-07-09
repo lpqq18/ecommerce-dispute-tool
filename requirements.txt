@@ -3,3 +3,4 @@ python-multipart>=0.0.20
 requests>=2.32.0
 rapidocr>=3.9.1
 onnxruntime>=1.23.2
+Pillow>=11.0.0

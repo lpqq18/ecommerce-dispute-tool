@@ -27,7 +27,7 @@ from case_store import (
 )
 from evidence_engine import build_rule_based_result
 from observability import OBSERVABILITY_ENABLED, OBSERVABILITY_WEBHOOK_URL
-from ocr_service import BAIDU_OCR_API_KEY, BAIDU_OCR_SECRET_KEY, OCR_API_URL, OCR_MIN_TEXT_CHARS, OCR_PROVIDER, OCR_REQUIRE_REAL, ocr_prompt_context, run_ocr
+from ocr_service import BAIDU_OCR_API_KEY, BAIDU_OCR_SECRET_KEY, OCR_API_URL, OCR_IMAGE_PREPROCESS, OCR_MAX_IMAGE_SIDE, OCR_MIN_TEXT_CHARS, OCR_PROVIDER, OCR_REQUIRE_REAL, ocr_prompt_context, run_ocr
 from privacy_guard import REDACTION_ENABLED
 from workflow_engine import WorkflowNode, run_workflow
 
@@ -675,6 +675,8 @@ def runtime_config() -> dict:
             "rapidocr_supported": True,
             "require_real": OCR_REQUIRE_REAL,
             "min_text_chars": OCR_MIN_TEXT_CHARS,
+            "image_preprocess": OCR_IMAGE_PREPROCESS,
+            "max_image_side": OCR_MAX_IMAGE_SIDE,
         },
         "ai": {
             "provider": AI_PROVIDER,

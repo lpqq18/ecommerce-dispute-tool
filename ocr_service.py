@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import os
 import tempfile
 import time
@@ -21,6 +22,8 @@ BAIDU_OCR_ENDPOINT = os.getenv("BAIDU_OCR_ENDPOINT", "https://aip.baidubce.com/r
 OCR_TIMEOUT_SECONDS = int(os.getenv("OCR_TIMEOUT_SECONDS", "60"))
 OCR_REQUIRE_REAL = os.getenv("OCR_REQUIRE_REAL", "0").strip() == "1"
 OCR_MIN_TEXT_CHARS = int(os.getenv("OCR_MIN_TEXT_CHARS", "0"))
+OCR_IMAGE_PREPROCESS = os.getenv("OCR_IMAGE_PREPROCESS", "1").strip() != "0"
+OCR_MAX_IMAGE_SIDE = int(os.getenv("OCR_MAX_IMAGE_SIDE", "2200"))
 
 _PADDLE_ENGINE = None
 _RAPID_ENGINE = None
@@ -117,8 +120,9 @@ def run_rapidocr(images: list[dict]) -> dict:
         suffix = suffix_for_mime(image.get("mime"))
         temp_path = None
         try:
+            image_bytes, preprocess_note = prepare_image_bytes(image, suffix)
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-                temp_file.write(image.get("bytes") or b"")
+                temp_file.write(image_bytes)
                 temp_path = temp_file.name
             raw_result = _RAPID_ENGINE(temp_path)
             blocks = normalize_rapidocr_blocks(raw_result)
@@ -129,6 +133,7 @@ def run_rapidocr(images: list[dict]) -> dict:
                     "blocks": blocks,
                     "block_count": len(blocks),
                     "text": "\n".join(block["text"] for block in blocks if block.get("text")),
+                    "preprocess": preprocess_note,
                 }
             )
         finally:
@@ -245,8 +250,9 @@ def run_paddle_ocr(images: list[dict]) -> dict:
         suffix = suffix_for_mime(image.get("mime"))
         temp_path = None
         try:
+            image_bytes, preprocess_note = prepare_image_bytes(image, suffix)
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-                temp_file.write(image.get("bytes") or b"")
+                temp_file.write(image_bytes)
                 temp_path = temp_file.name
             raw_result = _PADDLE_ENGINE.ocr(temp_path, cls=True)
             blocks = normalize_paddle_blocks(raw_result)
@@ -257,6 +263,7 @@ def run_paddle_ocr(images: list[dict]) -> dict:
                     "blocks": blocks,
                     "block_count": len(blocks),
                     "text": "\n".join(block["text"] for block in blocks if block.get("text")),
+                    "preprocess": preprocess_note,
                 }
             )
         finally:
@@ -362,6 +369,38 @@ def suffix_for_mime(mime: str | None) -> str:
         "image/webp": ".webp",
         "image/jpeg": ".jpg",
     }.get(mime or "", ".jpg")
+
+
+def prepare_image_bytes(image: dict, suffix: str) -> tuple[bytes, dict]:
+    raw = image.get("bytes") or b""
+    note = {"enabled": False, "resized": False}
+    if not OCR_IMAGE_PREPROCESS or OCR_MAX_IMAGE_SIDE <= 0 or not raw:
+        return raw, note
+    try:
+        from PIL import Image, ImageOps
+    except ImportError:
+        return raw, note
+
+    try:
+        with Image.open(io.BytesIO(raw)) as original:
+            img = ImageOps.exif_transpose(original)
+            width, height = img.size
+            note = {"enabled": True, "resized": False, "original_size": [width, height]}
+            if max(width, height) <= OCR_MAX_IMAGE_SIDE:
+                return raw, note
+            img.thumbnail((OCR_MAX_IMAGE_SIDE, OCR_MAX_IMAGE_SIDE), Image.Resampling.LANCZOS)
+            output = io.BytesIO()
+            save_format = "PNG" if suffix == ".png" else "JPEG"
+            if save_format == "JPEG" and img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            save_kwargs = {"optimize": True}
+            if save_format == "JPEG":
+                save_kwargs["quality"] = 88
+            img.save(output, format=save_format, **save_kwargs)
+            note.update({"resized": True, "processed_size": list(img.size)})
+            return output.getvalue(), note
+    except Exception:
+        return raw, note
 
 
 def ocr_prompt_context(ocr_result: dict | None) -> str:

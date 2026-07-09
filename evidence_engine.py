@@ -6,10 +6,18 @@ from collections import Counter
 
 CASE_TYPE_KEYWORDS = {
     "恶意差评": ["差评", "评价", "投诉", "曝光", "威胁", "不给", "不处理就", "一星", "差评见"],
-    "货不对板": ["货不对板", "不一样", "不符", "规格", "尺码", "颜色", "型号", "sku", "假货", "实物", "详情页"],
-    "退款争议": ["退款", "退货", "仅退款", "售后", "平台介入", "拒绝退款", "同意退款", "退回"],
+    "货不对板": ["货不对板", "不一样", "不符", "规格", "尺码", "颜色", "型号", "sku", "假货", "实物", "详情页", "开线", "破损", "变形", "少件", "漏发", "错发", "质量问题"],
+    "退款争议": ["退款", "退货", "仅退款", "售后", "平台介入", "拒绝退款", "同意退款", "退回", "申请售后", "退不了", "不用退货"],
     "物流异常": ["物流异常", "停滞", "丢件", "延误", "派送失败", "拒收", "揽收", "运输中", "无更新", "卡住"],
     "未收到货纠纷": ["没收到", "未收到", "没有收到", "没拿到", "收不到", "没看见包裹", "没收到货"],
+}
+
+CASE_TYPE_WEIGHTS = {
+    "恶意差评": {"差评": 3, "评价": 1, "投诉": 2, "曝光": 3, "威胁": 4, "不给": 2, "不处理就": 4, "一星": 4, "差评见": 5, "好评": 2, "五星好评": 5, "给个好评": 4, "给你好评": 4},
+    "货不对板": {"货不对板": 6, "不一样": 3, "不符": 3, "规格": 2, "尺码": 2, "颜色": 2, "型号": 2, "sku": 2, "假货": 5, "实物": 2, "详情页": 2, "开线": 4, "破损": 4, "变形": 4, "挤压": 3, "少件": 4, "漏发": 4, "错发": 5, "质量问题": 4},
+    "退款争议": {"退款": 2, "退货": 2, "仅退款": 6, "售后": 2, "平台介入": 4, "拒绝退款": 4, "同意退款": 3, "退回": 2, "申请售后": 3, "退不了": 4, "不用退货": 5, "平台都给退": 5},
+    "物流异常": {"物流异常": 6, "停滞": 5, "丢件": 6, "延误": 4, "派送失败": 5, "拒收": 4, "揽收": 2, "运输中": 1, "无更新": 5, "卡住": 4, "长时间未更新": 6},
+    "未收到货纠纷": {"没收到": 5, "未收到": 5, "没有收到": 5, "没拿到": 4, "收不到": 4, "没看见包裹": 5, "没收到货": 6},
 }
 
 SELLER_KEYWORDS = ["商家", "卖家", "客服", "已发货", "物流显示", "查询", "催件", "补发", "拒绝", "同意", "提供"]
@@ -101,15 +109,43 @@ def split_lines(text: str) -> list[str]:
 
 def classify_dispute(corpus: str) -> str:
     scores = Counter()
-    for case_type, keywords in CASE_TYPE_KEYWORDS.items():
-        for keyword in keywords:
+    for case_type, weighted_keywords in CASE_TYPE_WEIGHTS.items():
+        for keyword, weight in weighted_keywords.items():
             if keyword.lower() in corpus:
-                scores[case_type] += 1
-    if "签收" in corpus and any(item in corpus for item in ["没收到", "未收到", "没有收到"]):
+                scores[case_type] += weight
+
+    refund_without_return = has_any(corpus, ["仅退款", "不用退货", "退不了", "平台都给退"])
+    review_extortion = has_review_extortion(corpus)
+    product_issue = has_any(corpus, ["开线", "破损", "变形", "挤压", "少件", "漏发", "错发", "质量问题", "不一样", "不符"])
+    not_received = has_any(corpus, ["没收到", "未收到", "没有收到", "没拿到"])
+    logistics_problem = has_any(corpus, ["停滞", "无更新", "丢件", "延误", "派送失败", "物流异常", "卡住"])
+
+    if review_extortion:
+        scores["恶意差评"] += 8
+    if refund_without_return:
+        scores["退款争议"] += 6
+    if product_issue and not refund_without_return:
+        scores["货不对板"] += 5
+    elif product_issue and refund_without_return:
+        scores["货不对板"] += 2
+    if has_signed_delivery(corpus) and not_received:
         scores["未收到货纠纷"] += 3
+    if logistics_problem and not not_received:
+        scores["物流异常"] += 4
+
     if scores:
         return scores.most_common(1)[0][0]
     return "无法判断"
+
+
+def has_any(corpus: str, keywords: list[str]) -> bool:
+    return any(keyword.lower() in corpus for keyword in keywords)
+
+
+def has_review_extortion(corpus: str) -> bool:
+    review_terms = ["差评", "一星", "投诉", "曝光", "好评", "五星好评", "给个好评", "给你好评"]
+    pressure_terms = ["不处理就", "不给就", "补偿", "补你", "赔", "抹零", "退一半", "给我退", "给我补", "少一点", "便宜点"]
+    return has_any(corpus, review_terms) and has_any(corpus, pressure_terms)
 
 
 def extract_chat_records(lines: list[str]) -> list[dict]:
@@ -178,9 +214,9 @@ def detect_logistics_status(corpus: str) -> str:
 def evidence_completeness(corpus: str, dispute_type: str) -> dict:
     order = any(item in corpus for item in ["订单", "订单号", "交易", "付款", "已发货", "已完成"])
     logistics = any(item in corpus for item in ["物流", "快递", "运单", "单号", "签收", "派送", "揽收", "运输"])
-    chat = any(item in corpus for item in ["买家", "卖家", "客服", "商家", "退款", "没收到", "差评", "投诉"])
-    product = any(item in corpus for item in ["商品", "规格", "sku", "颜色", "尺码", "详情页", "实物"])
-    refund = any(item in corpus for item in ["退款", "退货", "售后", "平台介入", "仅退款"])
+    chat = any(item in corpus for item in ["买家", "卖家", "客服", "商家", "退款", "没收到", "差评", "投诉", "已读", "接待中", "老客", "平台"])
+    product = any(item in corpus for item in ["商品", "规格", "sku", "颜色", "尺码", "详情页", "实物", "开线", "破损", "变形", "挤压", "少件", "漏发", "错发", "质量问题", "包装"])
+    refund = any(item in corpus for item in ["退款", "退货", "售后", "平台介入", "仅退款", "申请售后", "退不了", "不用退货", "同意退款", "拒绝退款"])
     flags = [order, logistics, chat, product if dispute_type == "货不对板" else True, refund if dispute_type == "退款争议" else True]
     score = int(sum(1 for item in flags if item) / len(flags) * 100)
     missing = []
@@ -210,6 +246,11 @@ def build_conflicts(corpus: str, claims: list[str], dispute_type: str, completen
     conflicts = []
     not_received = any(item in corpus for item in ["没收到", "未收到", "没有收到", "没拿到"])
     signed = has_signed_delivery(corpus)
+    refund_without_return = has_any(corpus, ["仅退款", "不用退货", "退不了", "平台都给退", "退一半"])
+    seller_asks_return = has_any(corpus, ["请申请退货", "让你退货", "退货退款", "寄回", "退回"])
+    product_issue = has_any(corpus, ["开线", "破损", "变形", "挤压", "少件", "漏发", "错发", "质量问题", "不一样", "不符"])
+    review_extortion = has_review_extortion(corpus)
+
     if not_received and signed:
         conflicts.append(
             {
@@ -217,6 +258,33 @@ def build_conflicts(corpus: str, claims: list[str], dispute_type: str, completen
                 "objective_evidence": "OCR 文本识别到物流已签收/签收相关信息",
                 "conflict_level": "high",
                 "conclusion": "买家主张与物流签收状态存在明显冲突，应优先提交物流签收证明。",
+            }
+        )
+    if review_extortion:
+        conflicts.append(
+            {
+                "claim": "买家以好评/差评/投诉等评价结果换取补偿或让利",
+                "objective_evidence": "OCR 文本识别到评价承诺、差评投诉压力与补偿/抹零/退款诉求同时出现",
+                "conflict_level": "high",
+                "conclusion": "存在明显评价施压或利益交换特征，应保留完整聊天记录、订单履约证据和售后处理记录。",
+            }
+        )
+    if refund_without_return and seller_asks_return:
+        conflicts.append(
+            {
+                "claim": "买家倾向仅退款或不退货退款",
+                "objective_evidence": "OCR 文本识别到商家要求退货/寄回，但买家表达不用退货、退不了或要求部分退款",
+                "conflict_level": "high",
+                "conclusion": "买家退款诉求与商家退货退款处理路径冲突，建议优先提交售后节点和聊天上下文。",
+            }
+        )
+    if product_issue and dispute_type in ("货不对板", "退款争议", "恶意差评"):
+        conflicts.append(
+            {
+                "claim": "买家主张商品存在开线、破损、变形、错发或规格不符等问题",
+                "objective_evidence": "OCR 文本识别到商品问题描述，但仍需商品图、详情页/SKU 或售后节点交叉验证",
+                "conflict_level": "medium",
+                "conclusion": "商品问题主张需要客观图片或规格页佐证；若仅有聊天主张，申诉结论应保持审慎。",
             }
         )
     if dispute_type == "退款争议" and any(item in corpus for item in ["仅退款", "退款"]) and signed:
@@ -271,6 +339,10 @@ def build_conflicts(corpus: str, claims: list[str], dispute_type: str, completen
 
 def score_dispute_risk(dispute_type: str, conflicts: list[dict], completeness: dict) -> int:
     base = 35 if dispute_type == "无法判断" else 50
+    if dispute_type == "恶意差评":
+        base += 10
+    if dispute_type == "物流异常":
+        base += 4
     if any(item["conflict_level"] == "high" for item in conflicts):
         base += 28
     elif any(item["conflict_level"] == "medium" for item in conflicts):
@@ -284,6 +356,10 @@ def score_appeal_win(dispute_type: str, conflicts: list[dict], completeness: dic
     score = int(completeness.get("overall_score", 0) * 0.55) + 20
     if any("超时未处理" in item.get("objective_evidence", "") or "已同意退款" in item.get("objective_evidence", "") for item in conflicts):
         score -= 35
+    if any("评价施压" in item.get("conclusion", "") or "利益交换" in item.get("objective_evidence", "") for item in conflicts):
+        score += 12
+    if any("退款诉求与商家退货退款处理路径冲突" in item.get("conclusion", "") for item in conflicts):
+        score += 10
     if any(item["conflict_level"] == "high" for item in conflicts):
         score += 18
     elif any(item["conflict_level"] == "medium" for item in conflicts):
